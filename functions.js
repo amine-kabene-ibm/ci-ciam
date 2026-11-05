@@ -652,12 +652,12 @@ function getPolicyId(name, accessToken) {
       }
     }
     console.log("Lookup Policy:" + name);
-    request.get(process.env.OIDC_CI_BASE_URI + `/v1.0/policyvault/accesspolicy?search=name = ${name}`, options, function(_err, response, body) {
-      pbody = JSON.parse(body);
+    request.get(process.env.OIDC_CI_BASE_URI + `/v5.0/policyvault/accesspolicy?search=name="${encodeURIComponent(name)}"`, options, function(_err, response, body) {
       console.log("Response code:", response.statusCode);
       console.log("Lookup response:", body);
       if (response.statusCode == 200) {
-        if (pbody.policies[0]) {
+        var pbody = JSON.parse(body);
+        if (pbody.policies && pbody.policies[0]) {
           console.log("Returning id: " + pbody.policies[0].id);
           resolve(pbody.policies[0].id);
         } else {
@@ -670,52 +670,46 @@ function getPolicyId(name, accessToken) {
   });
 }
 
-
-
 function createMfaPolicy(policyName, mfaGroup, accessToken) {
   return new Promise((resolve, reject) => {
     var data = {
-"description": "2FA Policy for Demo.  Added via API",
-"format": "json",
-"name": policyName,
-"rules": [{
-  "alwaysRun": false,
-  "conditions": {
-    "subjectAttributes": {
-      "attributes": [{
-        "name": "groupIds",
-        "opCode": "EQ",
-        "values": [ mfaGroup ]
+      "containsFirstFactor": false,
+      "description": "2FA Policy for Demo.  Added via API",
+      "name": policyName,
+      "meta": {
+        "state": "ACTIVE",
+        "schema": "urn:access:policy:5.0:schema",
+        "enforcementType": "fedSSO"
+      },
+      "rules": [{
+        "alwaysRun": false,
+        "conditions": [{
+          "type": "subjectAttributes",
+          "attributes": [{
+            "name": "groupIds",
+            "opCode": "IN",
+            "values": [ process.env.MFAGROUPID || mfaGroup ]
+          }]
+        }],
+        "firstFactor": false,
+        "name": `2FA for ${mfaGroup}`,
+        "result": {
+          "action": "ACTION_MFA_ALWAYS",
+          "authnMethods": ["urn:ibm:security:authentication:asf:macotp"],
+          "serverSideActions": []
+        }
+      }, {
+        "alwaysRun": false,
+        "conditions": [],
+        "firstFactor": false,
+        "name": "Default rule",
+        "result": {
+          "action": "ACTION_ALLOW",
+          "authnMethods": ["urn:ibm:security:authentication:asf:macotp"],
+          "serverSideActions": []
+        }
       }]
     }
-  },
-  "id": random_id(),
-  "name": `2FA for ${mfaGroup}`,
-  "result": {
-    "action": {
-      "allowAccess": false,
-      "factorFrequency": "ALWAYS",
-      "requireFactor": true
-    },
-    "authnMethods": ["urn:ibm:security:authentication:asf:macotp"],
-    "serverSideActions": []
-  }
-}, {
-  "alwaysRun": false,
-  "conditions": {},
-  "id": random_id(),
-  "name": "Default rule",
-  "result": {
-    "action": {
-      "allowAccess": true,
-      "requireFactor": false
-    },
-    "authnMethods": ["urn:ibm:security:authentication:asf:macotp"],
-    "serverSideActions": []
-  }
-}],
-"schemaVersion": "urn:access:policy:3.0:schema"
-}
 
     console.log("Policy creation information:", data)
 
@@ -726,7 +720,7 @@ function createMfaPolicy(policyName, mfaGroup, accessToken) {
       },
       'body': JSON.stringify(data)
     }
-    request.post(process.env.OIDC_CI_BASE_URI + '/v1.0/policyvault/accesspolicy', options, function(_err, response, body) {
+    request.post(process.env.OIDC_CI_BASE_URI + '/v5.0/policyvault/accesspolicy', options, function(_err, response, body) {
       console.log("Create policy");
       console.log("Response code:", response.statusCode);
       if (response.statusCode == 201) {
