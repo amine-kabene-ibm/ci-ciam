@@ -691,7 +691,7 @@ async function createGroup(groupName, accessToken) {
       pbody = response.data;
     console.log("Response code:", response.status);
       console.log("Create response:", JSON.stringify(pbody));
-      if (response.statusCode == 201) {
+      if (response.status == 201) {
         return pbody.id;
       } else {
         throw(response.data);
@@ -702,7 +702,7 @@ async function createGroup(groupName, accessToken) {
 async function getPolicyId(name, accessToken) {
     var options = {
       'method': 'get',
-      'url': process.env.OIDC_CI_BASE_URI + `/v3.0/policyvault/accesspolicy?search=name = ${name}`,
+      'url': process.env.OIDC_CI_BASE_URI + `/v5.0/policyvault/accesspolicy?search=name="${encodeURIComponent(name)}"`,
       'headers': {
         'Content-Type': 'application/scim+json',
         'Authorization': `Bearer ${accessToken}`
@@ -816,53 +816,47 @@ async function createMfaPolicy(policyName, mfaGroup, accessToken) {
   var data = {
 	  "containsFirstFactor":false,
 	  "description":"2FA Policy for Demo.  Added via API",
-	  "enforcementType":"fedSSO",
 	  "name": policyName,
+	  "meta": {
+	    "state":"ACTIVE",
+	    "schema":"urn:access:policy:5.0:schema",
+	    "enforcementType":"fedSSO"
+	  },
 	  "rules":[
 	 	{
 			"alwaysRun":false,
-			"conditions":{
-				"subjectAttributes":{
+			"conditions":[
+				{
+					"type":"subjectAttributes",
 					"attributes":[
 						{
 							"name":"groupIds",
 							"opCode":"IN",
-							"values":[ mfaGroup ]
+							"values":[ process.env.MFAGROUPID || mfaGroup ]
 						}
 					]
 				}
-			},
+			],
 			"firstFactor":false,
-			"id": random_id(),
 			"name": `2FA for ${mfaGroup}`,
 			"result":{
-				"action":{
-					"allowAccess":false,
-					"requireFactor":false
-				},
+				"action":"ACTION_MFA_ALWAYS",
 				"authnMethods":["urn:ibm:security:authentication:asf:macotp"],
-				"extendedAction":{"action":"ACTION_MFA_ALWAYS"},
 				"serverSideActions":[]
 			}
 		},
 		{
 			"alwaysRun":false,
-			"conditions":{},
+			"conditions":[],
 			"firstFactor":false,
-			"id": random_id(),
 			"name":"Default rule",
 			"result":{
-				"action":{
-					"allowAccess":false,
-					"requireFactor":false
-				},
+				"action":"ACTION_ALLOW",
 				"authnMethods":["urn:ibm:security:authentication:asf:macotp"],
-				"extendedAction":{"action":"ACTION_ALLOW"},
 				"serverSideActions":[]
 			}
 		}
-	  ],
-	  "schemaVersion":"urn:access:policy:4.0:schema"
+	  ]
   }
 
 
@@ -870,7 +864,7 @@ async function createMfaPolicy(policyName, mfaGroup, accessToken) {
 
   var options = {
     'method': 'post',
-    'url': process.env.OIDC_CI_BASE_URI + '/v3.0/policyvault/accesspolicy',
+    'url': process.env.OIDC_CI_BASE_URI + '/v5.0/policyvault/accesspolicy',
     'headers': {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${accessToken}`
@@ -1180,7 +1174,7 @@ async function createPurpose(purposeId, attrId, description, readAT, defaultAT, 
 
   var response = await axios(options);
   console.log("Create Purpose:", purposeId)
-  console.log("Response code:", response.statusCode);
+  console.log("Response code:", response.status);
   console.log("Create response:", response.data);
   if (response.status == 201) {
     var patchInfo = {"op":"replace","path":"state","value":1}
@@ -1262,9 +1256,9 @@ async function createDpcmRule(ruleName, conditions, decision, preChecked, descri
   }
   return axios(options).then(response => {
     console.log("Create Rule:", ruleName)
-    console.log("Response code:", response.statusCode);
+    console.log("Response code:", response.status);
     console.log("Create response:", response.data);
-    if (response.statusCode == 201) {
+    if (response.status == 201) {
       return true;
     } else {
       throw(response.data);
