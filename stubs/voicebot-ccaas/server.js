@@ -8,8 +8,13 @@
 //   /stepup/verify, /stepup/status/:callId
 //   /transaction  execute a request against the mock back-end APIs, only if the risk tier is satisfied
 //   /transcript/:callId  what happened, including every Verify call (status, x-correlation-id, ms)
+// UC-07 adds (only when a `handoff` config is passed to buildApp):
+//   /handoff   the customer is already signed in to the mobile app: validate the app's access token with Verify (introspection),
+//              bridge the call to that app session, mint a short-lived channel token (RFC 8693 token exchange), skip the OTP for tier 1
+//   /agent/:callId  what a human agent's screen-pop would show; /handoff/latest  the newest bridged call (for the voice leg)
+//   Every tier-1 or step-up request re-checks that the app session is still alive. Tier 2 still needs a step-up.
 // Voice itself is simulated: the "caller" is demo/uc06-voice/caller.js (or run.js). Verify is the identity engine only.
-// The stub talks to Verify with a LEAST-PRIVILEGE API client (ifc-demo-uc06-ccaas), not the 165-entitlement admin client.
+// The stub talks to Verify with a LEAST-PRIVILEGE API client (ifc-demo-uc06-ccaas / ifc-demo-uc07-ccaas), not the 165-entitlement admin client.
 
 const express = require('express');
 const crypto = require('crypto');
@@ -22,10 +27,12 @@ const ACTION_LABEL = {
   change_email: 'Change e-mail address', change_bank_account: 'Change bank account',
 };
 
-function buildApp({ ccaasApi }) {
+// handoff (optional, UC-07): { sts: oauthClient(stsClientId, stsSecret), allowedClientIds: [app client ids], maxAppAuthAgeSec }
+function buildApp({ ccaasApi, handoff }) {
   const app = express();
   app.use(express.json());
   const calls = new Map();
+  let latestBridged = null;
 
   // ---- helpers ------------------------------------------------------------------------------------------------
   const iso = () => new Date().toISOString();
@@ -36,7 +43,7 @@ function buildApp({ ccaasApi }) {
     if (body.say) bot(call, body.say);
     res.status(code).json({ callId: call.id, ...body });
   };
-  // Every Verify call is recorded (no secrets, no OTP values).
+  // Every Verify call is recorded (no secrets, no OTP values, no tokens).
   async function v(call, op, method, path, opts = {}) {
     const r = await ccaasApi(method, path, { quiet: true, ...opts });
     call.verifyCalls.push({
@@ -45,6 +52,45 @@ function buildApp({ ccaasApi }) {
     });
     return r;
   }
+  // Same, for OAuth-client calls made with the STS client (introspect / token exchange).
+  async function o(call, op, method, path, fn) {
+    const r = await fn();
+    call.verifyCalls.push({ at: iso(), op, method, path, status: r.status, cid: r.cid, ms: r.ms, messageId: (r.data && r.data.error) || undefined });
+    return r;
+  }
+  const newCall = (channel) => {
+    const call = {
+      id: crypto.randomUUID(), startedAt: iso(), channel, transcript: [], verifyCalls: [], idAttempts: 0, locked: false,
+      customer: null, userId: null, email: null, factors: null, otp: null, verified: null, stepup: null, bridge: null,
+    };
+    calls.set(call.id, call);
+    return call;
+  };
+  // Which step-up factors does this customer have? (TOTP app code, registered phone for push)
+  async function loadFactors(call) {
+    const t = await v(call, 'list TOTP enrolment', 'GET', '/v2.0/factors/totp', { query: { search: `userId="${call.userId}"` } });
+    const sg = await v(call, 'list signature (push) enrolments', 'GET', '/v1.0/authnmethods/signatures', { query: { search: `owner="${call.userId}"` } });
+    const totp = t.status === 200 ? (t.data.totp || []).find((x) => x.enabled) : null;
+    const sig = sg.status === 200 ? (sg.data.signatures || []).find((x) => x.enabled && x.attributes && x.attributes.authenticatorId) : null;
+    call.factors = {
+      totpId: totp ? totp.id : null,
+      signatureId: sig ? sig.id : null,
+      authenticatorId: sig ? sig.attributes.authenticatorId : null,
+    };
+  }
+  // UC-07 session bridge: the call is only as trustworthy as the app session it is linked to. Re-introspect the app's access
+  // token; if it was revoked (logout) or the account was deactivated, the call drops back to "unverified".
+  async function bridgeAlive(call) {
+    if (!call.bridge) return true;
+    const i = await o(call, 'introspect app token (bridge check)', 'POST', '/oauth2/introspect', () => handoff.sts.introspect(call.bridge.appToken));
+    if (i.status === 200 && i.data && i.data.active === true) { if (call.verified) call.verified.at = Date.now(); return true; }
+    call.verified = null; call.stepup = null;
+    call.bridge.endedAt = iso(); call.bridge.endedBecause = i.status === 200 ? 'app token no longer active (logout, revocation or account deactivated)' : `introspection HTTP ${i.status}`;
+    return false;
+  }
+  const appSessionEnded = (res, call) => reply(res, 401, call, {
+    error: 'app_session_ended', say: 'I can no longer see your app session, so for your security I need to verify you another way.',
+  });
   const getCall = (req, res) => {
     const call = calls.get(req.body.callId || req.params.callId);
     if (!call) { res.status(404).json({ error: 'unknown_call' }); return null; }
@@ -65,12 +111,82 @@ function buildApp({ ccaasApi }) {
   app.post('/reset', (req, res) => { calls.clear(); be.reset(); res.json({ ok: true }); });
 
   app.post('/call', (req, res) => {
-    const call = {
-      id: crypto.randomUUID(), startedAt: iso(), transcript: [], verifyCalls: [], idAttempts: 0, locked: false,
-      customer: null, userId: null, email: null, factors: null, otp: null, verified: null, stepup: null,
-    };
-    calls.set(call.id, call);
+    const call = newCall('phone');
     reply(res, 201, call, { say: 'Welcome to Intact Insurance. Please say or enter your policy number.' });
+  });
+
+  // ---- UC-07: app-to-voice handoff ----------------------------------------------------------------------------
+  app.post('/handoff', async (req, res) => {
+    const call = newCall('app-handoff');
+    if (!handoff) return reply(res, 501, call, { error: 'handoff_not_configured' });
+    const token = typeof req.body.accessToken === 'string' ? req.body.accessToken : '';
+    caller(call, 'Taps "Speak with a Voicebot" in the app (token is not logged)');
+    if (!token) return reply(res, 400, call, { error: 'missing_token', say: 'I could not see your app session. Please say or enter your policy number.' });
+
+    // 1. CIAM validates the token generated by the mobile app
+    const i = await o(call, 'introspect app token', 'POST', '/oauth2/introspect', () => handoff.sts.introspect(token));
+    const t = i.status === 200 ? i.data : null;
+    if (!t || t.active !== true) {
+      return reply(res, 401, call, { error: 'invalid_app_token', say: 'I could not confirm your app session. Please say or enter your policy number.' });
+    }
+    // Only tokens issued to OUR apps, and never a token-exchange result (a voice-channel token must not be replayed as an app token)
+    if (!handoff.allowedClientIds.includes(t.client_id) || t.grant_type === 'urn:ietf:params:oauth:grant-type:token-exchange') {
+      return reply(res, 401, call, { error: 'untrusted_token', say: 'That session did not come from the Intact app. Please say or enter your policy number.' });
+    }
+    // 2. Who is it? sub is the Verify user id
+    const u = await v(call, 'SCIM lookup by id (sub)', 'GET', `/v2.0/Users/${encodeURIComponent(t.sub)}`, { query: { attributes: 'id,userName,emails,active' } });
+    const user = u.status === 200 ? u.data : null;
+    const cust = user && be.findByUserName(user.userName);
+    if (!user || user.active === false || !cust) {
+      return reply(res, 404, call, { error: 'no_policyholder', say: 'I cannot find an active policy for your profile. Let me transfer you to an agent.' });
+    }
+    call.customer = cust; call.userId = user.id; call.email = user.emails[0].value;
+    await loadFactors(call);
+    // 3. Policy: how fresh must the app login be to skip the OTP? iat is the issue time of the access token [INFER: a proxy for auth time]
+    const ageSec = Math.round(Date.now() / 1000 - t.iat);
+    if (handoff.maxAppAuthAgeSec != null && ageSec > handoff.maxAppAuthAgeSec) {
+      return reply(res, 200, call, {
+        handedOff: false, reason: 'app_login_too_old', appLoginAgeSec: ageSec, methods: ['email_otp'].concat(call.factors.totpId ? ['totp'] : []),
+        say: `I can see you signed in to the app, but not recently enough to skip a check. I will verify you with a code. I can e-mail one to the address ending ${be.mask(call.email).split('@')[1]}.`
+          + (call.factors.totpId ? ' Or you can read me the code from your authenticator app.' : ''),
+      });
+    }
+    // 4. Channel token: RFC 8693 token exchange, short lived, issued to the CCaaS STS client
+    const x = await o(call, 'token exchange (app token -> voice-channel token)', 'POST', '/oauth2/token', () => handoff.sts.exchange(token));
+    if (x.status !== 200 || !x.data.access_token) {
+      return reply(res, 502, call, { error: 'exchange_failed', verifyError: x.data && x.data.error, say: 'I had a problem linking your app. Let me transfer you to an agent.' });
+    }
+    const vt = await o(call, 'introspect voice-channel token', 'POST', '/oauth2/introspect', () => handoff.sts.introspect(x.data.access_token));
+    // 5. Session bridge. Raw tokens stay in memory and are never returned or logged.
+    call.bridge = {
+      appToken: token, voiceToken: x.data.access_token, sub: t.sub, appClientId: t.client_id, grantId: t.grant_id, amr: t.amr || [],
+      appTokenIssuedAt: new Date(t.iat * 1000).toISOString(), linkedAt: iso(),
+      voice: { ttlSec: x.data.expires_in, active: !!(vt.data && vt.data.active), grantType: vt.data && vt.data.grant_type, sameSubject: !!(vt.data && vt.data.sub === t.sub) },
+    };
+    call.verified = { method: 'app_token', at: Date.now(), atIso: iso() };
+    latestBridged = call.id;
+    reply(res, 200, call, {
+      handedOff: true, tier: 1, verifiedBy: 'mobile app session', customer: { name: `${cust.given} ${cust.family}`, policyNumber: cust.policyNumber },
+      bridge: { sub: t.sub, amr: call.bridge.amr, appLoginAgeSec: ageSec, appTokenExpiresInSec: t.exp - Math.round(Date.now() / 1000), voiceToken: call.bridge.voice },
+      stepUpAvailable: stepupOptions(call),
+      say: `Hello ${cust.given}, I can see you are signed in to the Intact app, so I do not need to ask you any security questions. How can I help you today?`,
+    });
+  });
+
+  app.get('/handoff/latest', (req, res) => (latestBridged ? res.json({ callId: latestBridged }) : res.status(404).json({ error: 'no_bridged_call' })));
+
+  // What a human agent's screen-pop would show.
+  app.get('/agent/:callId', async (req, res) => {
+    const call = getCall(req, res); if (!call) return;
+    const alive = call.bridge ? await bridgeAlive(call) : null;
+    res.json({
+      callId: call.id, channel: call.channel,
+      caller: call.customer ? { name: `${call.customer.given} ${call.customer.family}`, policyNumber: call.customer.policyNumber } : null,
+      authentication: call.verified
+        ? { status: 'AUTHENTICATED', by: call.verified.method === 'app_token' ? 'mobile app session' : call.verified.method, tier: 1, amr: call.bridge ? call.bridge.amr : undefined, sessionBridgeAlive: alive }
+        : { status: 'NOT AUTHENTICATED', note: call.bridge && call.bridge.endedBecause },
+      sensitiveRequests: stepupOk(call) ? 'step-up satisfied for ONE action' : 'step-up required (push or authenticator-app code)',
+    });
   });
 
   app.post('/identify', async (req, res) => {
@@ -90,15 +206,7 @@ function buildApp({ ccaasApi }) {
     if (!user) return reply(res, 502, call, { error: 'identity_not_found', say: 'I cannot verify your account right now. Let me transfer you to an agent.' });
 
     call.customer = cust; call.userId = user.id; call.email = user.emails[0].value;
-    const t = await v(call, 'list TOTP enrolment', 'GET', '/v2.0/factors/totp', { query: { search: `userId="${user.id}"` } });
-    const sg = await v(call, 'list signature (push) enrolments', 'GET', '/v1.0/authnmethods/signatures', { query: { search: `owner="${user.id}"` } });
-    const totp = t.status === 200 ? (t.data.totp || []).find((x) => x.enabled) : null;
-    const sig = sg.status === 200 ? (sg.data.signatures || []).find((x) => x.enabled && x.attributes && x.attributes.authenticatorId) : null;
-    call.factors = {
-      totpId: totp ? totp.id : null,
-      signatureId: sig ? sig.id : null,
-      authenticatorId: sig ? sig.attributes.authenticatorId : null,
-    };
+    await loadFactors(call);
     const methods = ['email_otp'].concat(call.factors.totpId ? ['totp'] : []);
     reply(res, 200, call, {
       identified: true, methods, stepUpAvailable: stepupOptions(call),
@@ -181,6 +289,7 @@ function buildApp({ ccaasApi }) {
 
   app.post('/stepup', async (req, res) => {
     const call = getCall(req, res); if (!call) return;
+    if (!(await bridgeAlive(call))) return appSessionEnded(res, call);
     if (!tier1Ok(call)) return reply(res, 401, call, { error: 'not_verified', say: 'I need to verify you first.' });
     const method = req.body.method;
     const action = req.body.action || (call.pending && call.pending.action);
@@ -251,6 +360,7 @@ function buildApp({ ccaasApi }) {
     const spec = be.ACTIONS[action];
     caller(call, `Request: ${action}`);
     if (!spec) return reply(res, 400, call, { error: 'unknown_action', say: 'Sorry, I cannot help with that request.' });
+    if (!(await bridgeAlive(call))) return appSessionEnded(res, call);
     if (!tier1Ok(call)) return reply(res, 401, call, { error: 'not_verified', say: 'I need to verify you before I can help with that.' });
     if (spec.tier === 2 && !stepupOk(call)) {
       call.pending = { action, at: Date.now() };
@@ -282,7 +392,11 @@ function buildApp({ ccaasApi }) {
   app.get('/transcript/:callId', (req, res) => {
     const call = getCall(req, res); if (!call) return;
     res.json({
-      callId: call.id, startedAt: call.startedAt, locked: call.locked,
+      callId: call.id, startedAt: call.startedAt, locked: call.locked, channel: call.channel,
+      bridge: call.bridge && {
+        sub: call.bridge.sub, appClientId: call.bridge.appClientId, amr: call.bridge.amr, appTokenIssuedAt: call.bridge.appTokenIssuedAt,
+        linkedAt: call.bridge.linkedAt, voiceToken: call.bridge.voice, endedAt: call.bridge.endedAt, endedBecause: call.bridge.endedBecause,
+      },
       verified: call.verified && { method: call.verified.method, at: call.verified.atIso },
       stepUp: call.stepup && { method: call.stepup.method, txnId: call.stepup.txnId, ok: call.stepup.ok, consumed: call.stepup.consumed },
       emailOtpTxnId: call.otp && call.otp.txnId,
@@ -299,8 +413,8 @@ function loadCcaasApi() {
   return createClient(st.ccaas.clientId, st.ccaas.clientSecret).api;
 }
 
-function start(port, ccaasApi) {
-  const app = buildApp({ ccaasApi: ccaasApi || loadCcaasApi() });
+function start(port, ccaasApi, handoff) {
+  const app = buildApp({ ccaasApi: ccaasApi || loadCcaasApi(), handoff });
   return new Promise((resolve, reject) => {
     const server = app.listen(port, '127.0.0.1', () => resolve(server));
     server.on('error', reject);

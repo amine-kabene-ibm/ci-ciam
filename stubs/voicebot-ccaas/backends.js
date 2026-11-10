@@ -14,6 +14,15 @@ const customers = [
     billing: { outstanding: 184.37, currency: 'CAD', dueDate: '2026-11-28' },
     renewalDate: '2027-03-14',
   },
+  { // UC-07: the customer who signs in to the app and is handed over to the voicebot
+    userName: 'ifc-demo-uc07-marie',
+    given: 'Marie',
+    family: 'Tremblay',
+    policyNumber: 'AUTO-77120',
+    vehicle: '2023 Toyota RAV4',
+    billing: { outstanding: 92.15, currency: 'CAD', dueDate: '2026-12-05' },
+    renewalDate: '2027-05-02',
+  },
 ];
 
 // Action catalogue = the risk tiers. tier 1: one verified factor. tier 2: tier 1 + a step-up factor.

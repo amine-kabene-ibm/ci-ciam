@@ -27,20 +27,9 @@ async function main() {
 
   // TOTP: a user can have ONE enrolment. Keep it if we still hold its secret, otherwise recreate it.
   const prev = state.read();
-  const l = await api('GET', '/v2.0/factors/totp', { query: { search: `userId="${user.id}"` } });
-  const existing = (l.data && l.data.totp) || [];
-  let secret = prev && prev.totp && prev.user && prev.user.id === user.id && existing.some((t) => t.id === prev.totp.id) ? prev.totp.secret : null;
-  let totpId = secret ? prev.totp.id : null;
-  if (!secret) {
-    for (const t of existing) await api('DELETE', `/v2.0/factors/totp/${t.id}`);
-    const e = await api('POST', '/v2.0/factors/totp', { body: { userId: user.id, accountName: `Intact (${customer.policyNumber})`, enabled: true } });
-    if (e.status !== 201) throw new Error(`TOTP enrol failed: HTTP ${e.status} cid=${e.cid}`);
-    secret = e.data.attributes.secret; totpId = e.data.id;
-    console.log(`TOTP         enrolled  id=${totpId}`);
-  } else {
-    console.log(`TOTP         exists    id=${totpId}`);
-  }
-  out.totp = { id: totpId, secret };
+  const t = await idem.ensureTotp(user.id, `Intact (${customer.policyNumber})`, prev && prev.user && prev.user.id === user.id ? prev.totp : null);
+  console.log(`TOTP         ${t.created ? 'enrolled' : 'exists  '}  id=${t.id}`);
+  out.totp = { id: t.id, secret: t.secret };
   out.customer = { userName: customer.userName, policyNumber: customer.policyNumber };
 
   // Registered phone (push) is a human step; report what exists.

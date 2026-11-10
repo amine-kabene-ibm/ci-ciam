@@ -53,6 +53,7 @@ var profile = require('./routes/profile');
 var openaccount = require('./routes/open-account');
 var accountclaim = require('./routes/account-claim');
 var consent = require('./routes/consent');
+var ifcHandoff = require('./routes/ifc-handoff');
 
 try {
 // Configure the OpenId Connect Strategy
@@ -133,6 +134,7 @@ app.use('/app/profile', checkAuthentication, profile);
 app.use('/open-account', openaccount);
 app.use('/account-claim', accountclaim);
 app.use('/app/consent', checkAuthentication, consent);
+app.use('/app/call-us', checkAuthentication, ifcHandoff); // UC-07 app-to-voice handoff
 // Only allow authenticated users to access the /users route
 //app.use('/users', checkAuthentication, users);
 // Only allow authenticated users to access the /users route

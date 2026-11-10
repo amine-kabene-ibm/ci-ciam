@@ -32,7 +32,7 @@
 | 04 | Trusted devices, push, revoke | NEEDS IBM / HUMAN SETUP | IBM Verify app on phone, admin console | Two registrations for one user unconfirmed |
 | 05 | Adaptive risk and fraud | PARTIAL NOW (policy view) / NEEDS BUILD + IBM | Admin console, risk stub | Threat detection inactive; IFC signals go in as `external_risk` webhook, not as Trusteer model features |
 | 06 | Voicebot | **READY NOW** for e-mail OTP + authenticator-code step-up (scripted 32/32 `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) and passkey | Terminal "caller", admin console, mailbox | Voice is simulated; SMS/voice OTP blocked on this tenant (e-mail OTP used); push and passkey step-up not yet proven |
-| 07 | App-to-voice handoff | NEEDS BUILD | Demo app + stub | None significant |
+| 07 | App-to-voice handoff | **READY NOW** for the scripted app (terminal, 48/48 `[LIVE]`) / NEEDS HUMAN SETUP for the browser login to the real demo app, push and passkey | Terminal "app + caller", demo app Help page, admin console | Voice and the CCaaS are simulated; browser path and push not yet executed; IFC's own flow text still says "enter the OTP" (confirm) |
 | 08 | SSO and global logout | NEEDS BUILD + tunnel | Browser with 3 stub apps | Idle/absolute session policy has no API found |
 | 09 | API security | NEEDS BUILD (scripts proven) | Terminal + admin console | mTLS handshake not proven; do not claim it until tested |
 | 10 | Per-brand login | NEEDS IBM (branding blocked on trial) | Two apps, login page | No sub-tenants (reseller only); themes blocked; delegated admin unconfirmed |
@@ -285,20 +285,45 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-07: App-to-voice transfer without re-authentication
 
-**Readiness:** NEEDS BUILD.
+**Readiness:** READY NOW for the terminal path (the script plays the mobile app). The browser path (real demo app login, then the button) is built but NEEDS HUMAN rehearsal: it has not been executed. Push step-up is NEEDS HUMAN SETUP (same phone as UC-06). Passkey is not built.
 
-**Prerequisites:** STS client; stub on :4030; user logged in to the demo app.
+**Prerequisites**
+- `node demo/uc07-handoff/setup.js` (idempotent). Customer: Marie Tremblay, policy `AUTO-77120`, user `ifc-demo-uc07-marie`.
+- Run `node demo/uc07-handoff/run.js` once before the session (about 30 s). It must end `48/48 checks passed`. If the TOTP step-up waits, that is Verify's single-use code windows, not a fault.
+- Browser path only: restart the demo app once (`node ./bin/www`, the Help page is new), start the voicebot `node demo/uc07-handoff/serve.js`, and have Marie's password ready from `demo/out/uc07.state.json` (`user.password`; do not show the file).
 
-**Click path**
-1. Customer window → sign in → profile → **Call us** (button to be added) → handoff.
-2. Terminal/stub UI shows the agent side: the voice stub received a token, introspected it (`active:true`, `sub`), and optionally exchanged it.
-3. Agent sees "Customer already authenticated by app (AAL2)". No questions asked for low-risk actions; step-up for sensitive ones.
+**Click path A: terminal only** (`node demo/uc07-handoff/voice.js --app-login`)
+1. The script prints `[APP] Marie signed in to the Intact app (methods: ["password"])` and "She taps Speak with a Voicebot". The bot greets her **by name and asks nothing**: no policy number, no code.
+2. Choose `1` (outstanding bill), `3` (pink slip e-mailed to the address on file), `4` (storage): all answered at once.
+3. Choose `5` (change my e-mail). The bot refuses until one more approval: choose `totp`, type `auto` (the script plays the authenticator app). It succeeds once. Ask for `6` right after: a new step-up is demanded.
+4. Hang up (`0`). The call prints every Verify call: token introspection, token exchange, SCIM lookup, with HTTP status, duration and `x-correlation-id`.
 
-**Talk track:** "The customer proves identity once. The token carries that assurance to another channel."
+**Click path B: with the real demo app** `[HUMAN]`
+1. Browser: `http://localhost:3000` > **Login** > sign in as `ifc-demo-uc07-marie` > **Help** (top bar) > **Speak with a Voicebot**.
+2. The page shows what the contact centre now knows: customer, "authenticated by mobile app session, validated by IBM Verify (token introspection)", login methods, app login age, voice-channel token lifetime. The token itself is never shown.
+3. Terminal: `node demo/uc07-handoff/voice.js` continues the same call (steps 2 to 4 above).
+4. Optional kill switch: sign out of the app (**Logout**) or deactivate Marie in the admin console, then ask the bot for the bill: it says it can no longer see the app session. (Scripted proof: scenarios D and E, 0.3 s and 1.0 s.)
 
-**Show in admin console:** Token exchange client; events.
+**Talk track:** "The customer proves who they are once, in the app. The contact centre asks Verify one question: is this token still valid, and whose is it? Verify answers with a standard introspection call and, if we want, exchanges it for a short-lived token scoped to the voice channel. Everyday requests need no questions; money and contact-detail changes still need a second factor. And the call is only as good as the app session: log out or deactivate the account and the bridge drops immediately."
 
-**Honest limitation:** None significant. Token exchange is documented and the STS client creation is proven `[LIVE]`.
+**Show in admin console**
+- Security > API clients: `ifc-demo-uc07-ccaas` (5 entitlements) vs the admin client. Applications: `ifc-demo-uc07-mobile-app`. The token-exchange (STS) client `ifc-demo-uc07-ccaas-sts` (menu path varies by release; confirm in rehearsal).
+- Users: `ifc-demo-uc07-marie` and her TOTP enrolment. Events/reports for the logins and the deactivation (menu names vary).
+
+**If it breaks**
+- Help page says the voicebot is not running: `node demo/uc07-handoff/serve.js`.
+- Voicebot says `untrusted_token` or `invalid_app_token` for the browser login: the browser token was issued to the demo app's client. `serve.js` trusts `OIDC_CLIENT_ID` from `.env`; check that value, and run `node demo/uc07-handoff/run.js` to confirm the tenant side. Tell the build owner: this is the one path not yet executed.
+- "app_login_too_old": the browser login is older than 15 minutes. Log in again.
+- `429 CSIBN0081E` on the step-up code: too many wrong codes; wait about 20 s. Each 30-second code works once.
+- Network errors (`ENOTFOUND`): the laptop resolver blipped; the scripts retry. Re-run.
+- Anything else: `node demo/uc07-handoff/setup.js` then `node demo/uc07-handoff/run.js`.
+
+**Honest limitation**
+- The mobile app is the web demo app (or a script); the CCaaS and the voice are simulated. What is proven is the Verify side of the contract: validate the token, exchange it, keep the bridge tied to the app session, enforce step-up.
+- Verify does **not** return `auth_time`/`acr` on introspection and the access token is opaque (no offline validation). The "recent login" rule uses the token's issue time.
+- The exchanged voice-channel token has no `act` claim and is not revoked by an app sign-out (it is by deactivation). The demo therefore re-checks the app token on every request. Say this if asked about token exchange.
+- Push and passkey step-up are not proven (see UC-06). The e-mail OTP fallback is the UC-06 flow.
+- IFC's flow text still says "User enters the OTP received via Voicebot" after the hand-off. We skip it for a valid app session and show it as the fallback; confirm intent with IFC.
 
 ---
 

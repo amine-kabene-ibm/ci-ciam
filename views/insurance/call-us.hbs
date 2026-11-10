@@ -1,0 +1,59 @@
+<!--Banner-->
+<div class="banner blue-bg" style="max-height: none;">
+    <div class="container">
+        <div class="banner-caption top-bottom-gap">
+            <h1>Help</h1>
+        </div>
+    </div>
+</div>
+<!--Content Area-->
+<div class="gray-bg">
+    <div class="container">
+        <div class="profile-info">
+            <div class="row">
+                <div class="col-12">
+                    <div class="editable-box">
+                        <div class="content-head">
+                            <h2>Speak with a Voicebot</h2>
+                        </div>
+                        <div class="col-content-main">
+                            {{#unless attempted}}
+                            <p>You are signed in. Tap the button and the voicebot will already know who you are: no code, no questions for everyday requests.</p>
+                            <form action="/app/call-us/handoff" method="post">
+                                <input type="submit" class="cta-btn" id="speak-with-voicebot" value="Speak with a Voicebot">
+                            </form>
+                            {{/unless}}
+
+                            {{#if unreachable}}
+                            <p><strong>The voicebot is not running.</strong> Start it in a terminal: <code>node demo/uc07-handoff/serve.js</code>, then try again.</p>
+                            <p><a href="/app/call-us">Try again</a></p>
+                            {{/if}}
+
+                            {{#if result}}
+                            <p><strong>Voicebot:</strong> {{result.say}}</p>
+                            {{#if result.handedOff}}
+                            <table>
+                                <tr class="table-head"><th style="width:35%;font-weight:bold;">What the contact centre knows</th><th style="font-weight:bold;">Value</th></tr>
+                                <tr class="table-row"><td>Customer</td><td>{{result.customer.name}} (policy {{result.customer.policyNumber}})</td></tr>
+                                <tr class="table-row"><td>Authenticated by</td><td>{{result.verifiedBy}}, validated by IBM Verify (token introspection)</td></tr>
+                                <tr class="table-row"><td>Methods used at app login (amr)</td><td>{{#each result.bridge.amr}}{{this}} {{/each}}</td></tr>
+                                <tr class="table-row"><td>App login age</td><td>{{result.bridge.appLoginAgeSec}} s</td></tr>
+                                <tr class="table-row"><td>Voice-channel token (token exchange)</td><td>lifetime {{result.bridge.voiceToken.ttlSec}} s, same subject: {{result.bridge.voiceToken.sameSubject}}</td></tr>
+                                <tr class="table-row"><td>Sensitive requests</td><td>{{agent.sensitiveRequests}}</td></tr>
+                                <tr class="table-row"><td>Call id</td><td>{{result.callId}}</td></tr>
+                            </table>
+                            <p>Now pick up the phone: in a terminal run <code>node demo/uc07-handoff/voice.js</code>. The voicebot answers as if you had never left the app.</p>
+                            {{else}}
+                            <p>Verify did not accept this app session for a hand-off (<code>{{result.error}}{{result.reason}}</code>). The voicebot falls back to its normal checks.</p>
+                            {{/if}}
+                            {{/if}}
+                        </div>
+                        <div class="content-foot">
+                            <p>Return to <a href="/app/profile" class="blue">profile</a></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

@@ -115,7 +115,95 @@ async function deleteApiClientsByPrefix(prefix) {
   return out;
 }
 
+// TOTP enrolment: one per user. Keep it if the caller still holds its secret (prev = {id, secret}), otherwise recreate.
+async function ensureTotp(userId, accountName, prev) {
+  const l = await api('GET', '/v2.0/factors/totp', { query: { search: `userId="${userId}"` } });
+  const existing = (l.data && l.data.totp) || [];
+  if (prev && prev.id && prev.secret && existing.some((t) => t.id === prev.id)) return { id: prev.id, secret: prev.secret, created: false };
+  for (const t of existing) await api('DELETE', `/v2.0/factors/totp/${t.id}`);
+  const e = await api('POST', '/v2.0/factors/totp', { body: { userId, accountName, enabled: true } });
+  if (e.status !== 201) throw new Error(`TOTP enrol failed: HTTP ${e.status} cid=${e.cid}`);
+  return { id: e.data.id, secret: e.data.attributes.secret, created: true };
+}
+
+// STS (token exchange) clients. Create returns 201 with an EMPTY body and the list uses clientId, not id [LIVE].
+// We choose the secret, so a client whose secret or lifetime drifted is recreated.
+async function findStsClient(clientName) {
+  const r = await api('GET', '/v1.0/sts/oauth/clients');
+  if (r.status !== 200) throw new Error(`list sts clients: HTTP ${r.status} cid=${r.cid}`);
+  return (r.data.clients || []).find((c) => c.clientName === clientName) || null;
+}
+
+async function ensureStsClient(clientName, { secret, accessTokenLifetime }) {
+  if (!clientName.startsWith(PREFIX)) throw new Error(`sts client name must start with ${PREFIX}`);
+  const tokenType = 'urn:ietf:params:oauth:token-type:access_token';
+  let existing = await findStsClient(clientName);
+  let created = false;
+  if (existing) {
+    const g = await api('GET', `/v1.0/sts/oauth/clients/${existing.clientId}`);
+    const ok = g.status === 200 && g.data.enabled && g.data.clientAuthentication.clientSecret === secret
+      && g.data.tokenSettings.accessTokenLifetime === accessTokenLifetime;
+    if (!ok) { await api('DELETE', `/v1.0/sts/oauth/clients/${existing.clientId}`); existing = null; }
+  }
+  if (!existing) {
+    const c = await api('POST', '/v1.0/sts/oauth/clients', {
+      body: {
+        clientName, enabled: true,
+        clientAuthentication: { clientAuthMethod: 'client_secret_basic', clientSecret: secret },
+        tokenSettings: { signingAlg: 'RS256', accessTokenLifetime },
+        tokenExchangeSettings: { subjectTokenTypes: [tokenType], requestedTokenTypes: [tokenType] },
+      },
+    });
+    if (c.status !== 201) throw new Error(`create sts client ${clientName}: HTTP ${c.status} cid=${c.cid}`);
+    existing = await findStsClient(clientName);
+    created = true;
+  }
+  return { clientId: existing.clientId, created };
+}
+
+async function deleteStsClientsByPrefix(prefix) {
+  const r = await api('GET', '/v1.0/sts/oauth/clients');
+  const out = [];
+  for (const c of (r.data && r.data.clients) || []) {
+    if (!c.clientName.startsWith(prefix)) continue;
+    out.push({ clientName: c.clientName, status: (await api('DELETE', `/v1.0/sts/oauth/clients/${c.clientId}`, { quiet: true })).status });
+  }
+  return out;
+}
+
+// Dynamic-client-registration apps (/oauth2/register). The secret is only returned at creation, so the caller keeps
+// {clientId, clientSecret, registrationUri, registrationToken} (prev) in its state file. If prev still resolves, reuse it.
+async function listApplications() {
+  const a = await api('GET', '/v1.0/applications');
+  return ((a.data && a.data._embedded) || {}).applications || [];
+}
+
+async function deleteApplicationsByPrefix(prefix) {
+  const out = [];
+  for (const x of await listApplications()) {
+    if (!x.name.startsWith(prefix)) continue;
+    out.push({ name: x.name, status: (await api('DELETE', x._links.self.href, { quiet: true })).status });
+  }
+  return out;
+}
+
+async function ensureDcrClient(name, body, prev) {
+  if (!name.startsWith(PREFIX)) throw new Error(`application name must start with ${PREFIX}`);
+  if (prev && prev.registrationUri) {
+    const g = await api('GET', new URL(prev.registrationUri).pathname, { noAuth: true, headers: { Authorization: `Bearer ${prev.registrationToken}` }, quiet: true });
+    if (g.status === 200) return { ...prev, created: false };
+  }
+  await deleteApplicationsByPrefix(name); // same-named leftovers whose secret we no longer hold
+  const r = await api('POST', '/oauth2/register', { body: { client_name: name, ...body } });
+  if (r.status !== 201) throw new Error(`register ${name}: HTTP ${r.status} cid=${r.cid}`);
+  return {
+    clientId: r.data.client_id, clientSecret: r.data.client_secret,
+    registrationUri: r.data.registration_client_uri, registrationToken: r.data.registration_access_token, created: true,
+  };
+}
+
 module.exports = {
   findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix,
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
+  ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
 };

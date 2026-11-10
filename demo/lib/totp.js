@@ -30,4 +30,30 @@ function totp(key, { windowOffset = 0, now = Date.now(), digits = 6, period = 30
 // Milliseconds until the next 30 s boundary (plus a small margin).
 const msToNextWindow = (now = Date.now(), period = 30) => period * 1000 - (now % (period * 1000)) + 1500;
 
-module.exports = { totp, base32Decode, msToNextWindow };
+// Plays "the authenticator app" for scripts. `state` is a stateFile() object whose JSON holds {totp:{secret}}.
+// Verify rejects a TOTP code that was already used (replay) and accepts windows -1/0/+1 around now [LIVE], so next() picks the
+// lowest window newer than the last one used and sleeps to the next 30 s boundary only if none is left.
+// The last used window is persisted in the state file (totpLastWindow) so re-runs stay valid.
+function totpPlayer(state) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function next() {
+    for (;;) {
+      const st = state.read();
+      const cur = Math.floor(Date.now() / 30000);
+      const w = Math.max(cur - 1, (st.totpLastWindow || 0) + 1);
+      if (w <= cur + 1) {
+        st.totpLastWindow = w; state.write(st);
+        return { code: totp(st.totp.secret, { windowOffset: w - cur }), window: w, offset: w - cur };
+      }
+      await sleep(msToNextWindow());
+    }
+  }
+  // A well-formed code that is not the current one. Does NOT consume a TOTP window (a window is single-use at Verify).
+  function wrong() {
+    const right = totp(state.read().totp.secret, { windowOffset: 0 });
+    return String((parseInt(right, 10) + 111111) % 1000000).padStart(6, '0');
+  }
+  return { next, wrong };
+}
+
+module.exports = { totp, base32Decode, msToNextWindow, totpPlayer };

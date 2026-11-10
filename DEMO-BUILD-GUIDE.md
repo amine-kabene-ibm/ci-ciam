@@ -39,7 +39,7 @@ Everything below is tagged by how I know it.
 | 12 | Access policy **v5.0** create works. Valid rule condition types: `adaptiveAttributes, adaptiveRiskScoreAttributes, authnMethods, cia, contextAttributes, customAttributes, factorLifetimeAttributes, geoLocation, integrationAttributes, ipAddress, location, postAuth, subjectAttributes, threatInsights, timeAttributes, trusteer, webhooks`. Policies with `geoLocation`, `threatInsights`, `trusteer`, `webhooks` conditions were **accepted** (201). `ipAddress` takes opCodes `MATCH`/`NOMATCH`. | Policy building (UC-02, 03, 05, 08) is possible by API. Acceptance of `trusteer` is not proof Adaptive access is licensed; it still needs a real login to evaluate. |
 | 13 | Threat detection config exists but is **`status: inactive`** (5 rules incl. credential stuffing, brute force). | UC-05 threat intel needs IBM to activate it. |
 | 14 | Webhook purposes available: `identity_proofing`, `external_mfa`, `external_risk`, `notifications`, `external_sms`. | **New finding:** `external_risk` lets a policy call an external information point, and `external_sms` routes SMS to an external provider. Both help UC-05 and UC-02 (see those sections). |
-| 15 | STS client create works (201) with `tokenSettings.signingAlg` set (the error `CSIAQ0134E` says it's required). | UC-09 token exchange / UC-07 buildable. |
+| 15 | STS client create works (201) with `tokenSettings.signingAlg` set (the error `CSIAQ0134E` says it's required). | UC-09 token exchange / UC-07 buildable. UC-07 later proved the exchange itself (finding 26). |
 | 16 | FIDO2 relying party create works: `POST /v2.0/factors/fido2/relyingparties {"origin":"https://..."}` returns 200. | UC-02 buildable. `GET` on that path returns 405 (not a list endpoint). |
 | 17 | `GET /v1.0/authenticators` returns 0 registrations. `GET /v1.0/authenticators/discovery` lists one client, "Verify Profile". | UC-04/06/14: no phone is registered yet. `[HUMAN]` |
 | 18 | Sub-tenant API returns 405 `CSIAG0746E`: "This tenant does not have a partner reseller offering enabled". | **Resolves the open UC-10 question:** sub-tenants are a **reseller** feature, not a per-brand admin feature. Not available. |
@@ -50,6 +50,7 @@ Everything below is tagged by how I know it.
 | 23 | `POST /v1.0/apiclients` creates a least-privilege API client (201, **empty body**; read `clientId`/`clientSecret` via `GET /v1.0/apiclients/{id}`). Requests beyond its entitlements return 403 `CSIAK4300E`. (UC-06) | Third-party/CCaaS components can run on a client with 5 entitlements instead of the admin client. |
 | 24 | Email suppression list: a delivery failure suppresses the address; later OTPs to it return 400 `CSIBN0075E`. `GET`/`DELETE /v1.0/notification/suppression/email/{address}`. | Do not use fake `@example.com` mailboxes for OTP demos. |
 | 25 | `POST /v1.0/authenticators/initiation` with `Accept: image/png` returns the IBM Verify app registration QR. | UC-04 and UC-06 phone enrolment can be scripted up to the scan. |
+| 26 | Token exchange and introspection work (UC-07, 2026-11-10): `POST /oauth2/introspect` with an STS client (HTTP Basic) returns `active`, `sub`, `amr`, `exp`, `client_id`, `grant_type`; `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` returns a token of `tokenSettings.accessTokenLifetime`. `audience` is ignored, no `act` claim, the exchanged token survives revocation of the original but not user deactivation. Access tokens are opaque (no offline validation). | UC-07 is built on this. UC-09 token exchange / on-behalf-of reuses it: the `audience` and `act` expectations in the plan are wrong. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -264,17 +265,36 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-07: App-to-voice transfer without re-authentication
 
-**Status:** Bob builds all of it.
+**Status: BUILT, PARTIAL.** Built and verified end to end against the tenant with a scripted "mobile app" (48/48 scenario checks, `demo/out/uc07.json`; `verify.js` 21 PASS / 0 FAIL / 3 HUMAN). **Not executed:** a real browser login to `TrustMeInsurance` followed by the "Speak with a Voicebot" button, push approval for the sensitive request, passkey, and a real CCaaS vendor `[HUMAN]`. Details and exact commands: `demo/uc07-handoff/README.md`.
 
-**Build steps**
-1. Create STS client (proven shape `[LIVE]`): `POST /v1.0/sts/oauth/clients` with `clientName`, `enabled`, `clientAuthentication{clientAuthMethod, clientSecret}`, `tokenSettings{signingAlg:"RS256"}`, `tokenExchangeSettings{subjectTokenTypes, requestedTokenTypes}`. **Note:** list response uses `clientId`, not `id`; delete with `DELETE /v1.0/sts/oauth/clients/{clientId}` `[LIVE]` 204.
-2. In the demo app, add `POST /ifc/handoff`: sends the logged-in user's access token to the voice stub.
-3. The stub validates it with `POST /oauth2/introspect` (using the CCaaS client credentials) and, optionally, exchanges it via `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`.
-4. Policy decides which actions still need step-up.
+**Built**
+- `stubs/voicebot-ccaas/server.js` (UC-06 stub, extended): `POST /handoff`, `GET /agent/:callId`, `GET /handoff/latest`; `/transaction` and `/stepup` re-introspect the app token on every request (the "session bridge"). Reuses the UC-06 back-end mocks; new customer `ifc-demo-uc07-marie`, policy `AUTO-77120`.
+- Demo app: `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, a **Help** link in `views/layout.hbs`, mounted at `/app/call-us` in `app.js`. The server posts the session's access token to the voicebot; the token is never rendered or returned to the browser.
+- `demo/uc07-handoff/`: `setup.js`, `run.js`, `serve.js`, `voice.js`, `verify.js`, `teardown.js`, `README.md`.
+- Shared helpers added (not duplicated per UC): `oauthClient()` and `send()` in `demo/lib/verify.js`; `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `delete*ByPrefix` in `demo/lib/idempotent.js`; `totpPlayer()` in `demo/lib/totp.js` (UC-06 now uses it too; re-verified 32/32).
+- Tenant objects: user `ifc-demo-uc07-marie` + TOTP, API client `ifc-demo-uc07-ccaas` (5 entitlements), STS client `ifc-demo-uc07-ccaas-sts` (300 s tokens), application `ifc-demo-uc07-mobile-app` (DCR, password grant).
 
-**Human steps:** none beyond running the app and logging in `[HUMAN]` once.
+**Proven `[LIVE]`**
+- **Validate the app's token:** `POST /oauth2/introspect` (HTTP Basic with the STS client) returns `active:true`, `sub`, `amr`, `exp`, `client_id`, `grant_type`. Garbage or tampered token: `active:false`. Wrong client secret `401 CSIAQ0155E`.
+- **Token exchange (RFC 8693):** `POST /oauth2/token` (or `/v1.0/endpoint/default/token`) with the STS client, `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token`, `subject_token_type`/`requested_token_type` = `urn:ietf:params:oauth:token-type:access_token` returns 200 with a token of the configured lifetime (300 s), same `sub`, `grant_type` token-exchange. A revoked or tampered subject token returns 400 `CSIAQ0158E`.
+- **No OTP for tier 1**, step-up kept for tier 2 (TOTP proven), one step-up approves one action.
+- **Session bridge ends at once:** `POST /oauth2/revoke` on the app token, next voicebot request refused after 0.3 s; SCIM `PATCH active=false`, refused after 1.0 s and a new login is refused.
+- Policy fallback (old app login goes to a code), replay of a voice-channel token as an app token is refused, least privilege (403s), the demo-app route and view with a stand-in session.
 
-**Verification:** introspection `active:true` with `sub`; exchange response contains the new token.
+**Corrections to the earlier plan `[LIVE]`** (the guide's UC-07 text and the feasibility doc were wrong on these)
+- `audience=ccaas` is **ignored**: the exchanged token's `aud` is the STS client id.
+- **No `act` claim** is produced, even with an `actor_token`. (`actorTokenRequired:true` makes the actor mandatory, `CSIAQ5242E` otherwise.)
+- The exchanged token is **not revoked** when the original is revoked (still `active:true`); it **is** killed by user deactivation. So the bridge checks the app token, not the voice token.
+- Access tokens cannot be validated offline (the payload is opaque); introspection is the validation API. The ID token is a JWT (RS256) with `amr`.
+- Introspection has no `auth_time` or `acr`; "fresh login" is judged from `iat` `[INFER]`.
+- STS lifetime field is `tokenSettings.accessTokenLifetime` (`accessTokenExpiry` gives `CSIAQ0010E`).
+- Any API client (even 1 entitlement) can call `/v1.0/endpoint/default/introspect` for another client's token, so API-client credentials are as sensitive as the STS secret.
+
+**Human steps `[HUMAN]`**
+1. Browser path: `node demo/uc07-handoff/setup.js`, restart the app (`node ./bin/www`), `node demo/uc07-handoff/serve.js`, sign in at `http://localhost:3000` as `ifc-demo-uc07-marie` (password in `demo/out/uc07.state.json` `user.password`), **Help** > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`. If it works, the real-app-client token is proven; if the hand-off is refused, run `node demo/uc07-handoff/run.js` to confirm the tenant side and send me the output.
+2. Push step-up: same phone enrolment as UC-06.
+
+**Open risk:** IFC's text keeps "User enters the OTP received via Voicebot" in the UC-07 main flow, which contradicts the title. The demo skips it for a valid app session and uses it as the fallback. Confirm with IFC.
 
 ---
 
@@ -306,7 +326,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 2. `setup.js`: DCR clients: `ifc-demo-m2m-pkjwt`, `ifc-demo-m2m-mtls`, plus an STS client `ifc-demo-partner` with `actorCriteria` (CEL) restricting actors.
 3. `run.js`: sign assertion, get token, call `stubs/ifc-api` which introspects (`POST /oauth2/introspect`) and enforces scopes; show a wrong-key rejection.
 4. Key rotation: `POST /v2.0/clients/{id}/secrets` `[DOCS]` for secret clients; for `private_key_jwt`, add a second key to `jwks` (update client via `PUT /oauth2/register/{id}`), prove both keys work, remove the old one.
-5. On-behalf-of: policyholder token as `subject_token`, partner token as `actor_token`; assert `act` claim.
+5. On-behalf-of: policyholder token as `subject_token`, partner token as `actor_token`. **UC-07 found `[LIVE]` that the exchanged token carries no `act` claim in its introspection response** (and `actorTokenRequired` makes the actor mandatory); do not assert `act` until the JWT variant of the exchanged token is decoded or `actorCriteria` is tested. The exchanged token had three parts but an opaque payload.
 6. mTLS handshake test: call `POST /oauth2/token` with `curl --cert c.pem --key k.pem`. `[INFER]` the SaaS edge may not request client certs on the main host; if the handshake fails or ignores the cert, **do not claim mTLS**; fall back to DPoP using `verify-saas-resources/apps/oauth/dpop`.
 
 **Human steps:** none unless mTLS needs an IBM-provided mTLS hostname `[HUMAN]` (ask IBM).
@@ -427,6 +447,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 5 | Provide a test mailbox you can read (or several aliases). | UC-01, UC-03, UC-06, UC-14 | 5 min |
 | 6 | Run the passkey ceremony once in a browser. | UC-02 | 5 min |
 | 7 | Decide whether Podman images (OpenFGA, Verify Bridge) may be pulled on this machine. | UC-11, UC-12 | 5 min |
+| 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
 
 ## 4. Message to IBM (copy/paste)
 
@@ -442,7 +463,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
 2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven).
-3. **UC-07, UC-06 (built, push pending a phone), UC-01 Track A, UC-03**.
+3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
 4. **UC-02, UC-08, UC-04** (need browser/phone/tunnel).
 5. **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
 
@@ -455,4 +476,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `.env` | No change by me (B3 was already fixed) | |
 | `demo/lib/*`, `demo/00-probe.js`, `demo/teardown-all.js` | New foundation (token cache, SCIM headers, evidence, idempotent helpers, TOTP, probe table, tenant sweep) | Section 1 |
 | `stubs/voicebot-ccaas/`, `demo/uc06-voice/` | New: UC-06 | Section 2, UC-06 |
+| `stubs/voicebot-ccaas/server.js`, `backends.js`, `demo/uc07-handoff/` | UC-07: `/handoff`, `/agent`, session-bridge checks, customer `ifc-demo-uc07-marie`, scenario scripts | Section 2, UC-07 |
+| `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `app.js` (1 require + 1 mount), `views/layout.hbs` (Help link) | UC-07: the "Speak with a Voicebot" button in the demo app | Section 2, UC-07 |
+| `demo/lib/verify.js` (`oauthClient`, `send` with DNS retry), `demo/lib/idempotent.js` (TOTP, STS, DCR helpers), `demo/lib/totp.js` (`totpPlayer`), `demo/uc06-voice/{common,setup}.js` | Shared helpers extracted for UC-07; UC-06 behaviour unchanged (32/32) | Section 1 |
 

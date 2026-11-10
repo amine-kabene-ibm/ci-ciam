@@ -360,13 +360,13 @@ Each section: **Verdict, what Verify provides, what we build (API/CLI only), the
 - Reverse bridge (voice to web): bearer token to browser session via `POST /v1.0/auth/session` `[API]`.
 
 **Build**
-1. `setup.js`: STS client `ifc-demo-ccaas` allowed to exchange `subject_token` (app access token) for a short-lived `voice-channel` token with `aud=ccaas`.
+1. `setup.js`: STS client `ifc-demo-ccaas` allowed to exchange `subject_token` (app access token) for a short-lived `voice-channel` token. **Corrected by UC-07 `[LIVE]`:** `audience` is ignored; the token's `aud` is the STS client id.
 2. Mobile/web app simulated by the demo app: user logs in, app calls the voice stub's `/handoff` with its access token.
 3. Voice stub introspects/exchanges; skips OTP and answers account questions; policy decides which actions still need step-up.
 
 **Demo script:** log in to the app, click "Call us", the voice stub already knows the caller; attempt a sensitive action and show step-up still enforced.
 
-**Validation:** introspection response (`active:true`, `sub`, `exp`) printed; exchange shows the new token's `aud` and `act`/`sub`.
+**Validation:** introspection response (`active:true`, `sub`, `exp`) printed; exchange shows the new token's `sub`, lifetime and `grant_type`. **Corrected by UC-07 `[LIVE]`:** no `act` claim is returned. See `DEMO-BUILD-GUIDE.md` UC-07.
 
 ---
 

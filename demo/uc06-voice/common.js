@@ -23,28 +23,9 @@ async function resolveMailbox() {
   return admin.emails[0].value;
 }
 
-// Plays "the authenticator app" for scripts. Verify rejects a TOTP code that was already used (replay) [LIVE] and accepts
-// windows -1/0/+1 around now [LIVE], so each call picks the lowest window that is newer than the last one used, and
-// sleeps to the next 30 s boundary only if none is left. The last used window is persisted so re-runs stay valid.
-const { totp, msToNextWindow } = require('../lib/totp');
-const { sleep } = require('../lib/verify');
-async function nextTotpCode() {
-  for (;;) {
-    const st = state.read();
-    const cur = Math.floor(Date.now() / 30000);
-    const w = Math.max(cur - 1, (st.totpLastWindow || 0) + 1);
-    if (w <= cur + 1) {
-      st.totpLastWindow = w; state.write(st);
-      return { code: totp(st.totp.secret, { windowOffset: w - cur }), window: w, offset: w - cur };
-    }
-    await sleep(msToNextWindow());
-  }
-}
-// A well-formed code that is not the current one. Does NOT consume a TOTP window (a window is single-use at Verify).
-function wrongTotp() {
-  const st = state.read();
-  const right = totp(st.totp.secret, { windowOffset: 0 });
-  return String((parseInt(right, 10) + 111111) % 1000000).padStart(6, '0');
-}
+// Plays "the authenticator app" for scripts (shared with UC-07): see totpPlayer in ../lib/totp.js.
+const player = require('../lib/totp').totpPlayer(state);
+const nextTotpCode = player.next;
+const wrongTotp = player.wrong;
 
 module.exports = { nextTotpCode, wrongTotp, UC, CCAAS_CLIENT, CCAAS_ENTITLEMENTS, VERIFY_PROFILE_CLIENT_ID, state, customer, resolveMailbox };

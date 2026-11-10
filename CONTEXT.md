@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-10. **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-10 (UC-07 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -22,12 +22,14 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | Repo blocker fixes in `functions.js` | commit `688ecd2` | Done (see section 4) |
 | **Demo foundation**: `demo/lib/{verify,idempotent,totp}.js`, `demo/00-probe.js` (12 live checks), `demo/teardown-all.js` | `demo/` | Done, run on the tenant |
 | **UC-06 Voicebot**: `stubs/voicebot-ccaas/`, `demo/uc06-voice/` (setup, run, caller, enroll-phone, verify, teardown, README) | `demo/uc06-voice/` | **Built, PARTIAL.** E-mail OTP + TOTP step-up verified live (32/32, `demo/out/uc06.json`). Push and passkey step-up not proven: need a phone / browser `[HUMAN]` |
+| **UC-07 App-to-voice handoff**: `demo/uc07-handoff/` (setup, run, serve, voice, verify, teardown, README), `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `/handoff` in `stubs/voicebot-ccaas` | `demo/uc07-handoff/` | **Built, PARTIAL.** Verify side proven live: 48/48 scenarios (`demo/out/uc07.json`), `verify.js` 21 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser login to the app (2FA policy), push, passkey `[HUMAN]` |
+
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation and **UC-06** (see section 2). **Everything else is still only described in the build guide:** the other 14 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-06** and **UC-07** (see section 2). **Everything else is still only described in the build guide:** the other 13 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -67,6 +69,12 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 14. **Least-privilege API clients work:** `POST /v1.0/apiclients` (201, empty body; read the secret via GET). UC-06 uses a 5-entitlement client; out-of-scope calls return 403.
 15. **E-mail suppression list bites:** a bounce suppresses the address and OTPs then fail with `400 CSIBN0075E`. `example.com` addresses end up there. `GET`/`DELETE /v1.0/notification/suppression/email/{address}`.
 16. **Push to a phone is the one unproven UC-06 call.** Route and validation are live (404 for an unknown authenticator, 400 for a bad body); a real notification needs a registered IBM Verify app.
+17. **Introspection works** (UC-07): `POST /oauth2/introspect` with an STS client or the app's own client (HTTP Basic) returns `active, sub, amr, exp, client_id, grant_type, iat`. Garbage or tampered tokens give `{"active":false}`; wrong secret `401 CSIAQ0155E`; no credentials `400 CSIAQ0147E`. Any API client with `readUsers` can call `/v1.0/endpoint/default/introspect` for another client's token.
+18. **Revocation and deactivation bite fast:** `/oauth2/revoke` to refusal 0.3 s; SCIM deactivate to refusal 1.0 s (and new logins refused).
+19. **Access tokens are opaque.** They look like 3 dot-separated parts but cannot be validated offline; the ID token is an RS256 JWT with `amr`. There is no `auth_time` or `acr`, so freshness comes from the access-token `iat` `[INFER]`.
+20. **Token exchange (RFC 8693) works** with an STS client, but `audience` is ignored (`aud` = the STS client id) and there is **no `act` claim**, even with an `actor_token`. `actorTokenRequired:true` makes the actor mandatory (`CSIAQ5242E`). A revoked or tampered subject token gives `400 CSIAQ0158E`. The exchanged token is NOT revoked when the original is revoked; deactivating the user kills both. STS lifetime field is `tokenSettings.accessTokenLifetime`.
+21. **Scripted login:** the password grant works on `/oidc/endpoint/default/token` for a DCR client with `grant_types:["password"]` and `all_users_entitled:true`.
+22. **The laptop resolver intermittently fails** (`ENOTFOUND` on the tenant host for tens of seconds). `send()` in `demo/lib/verify.js` retries and rethrows message-only errors (axios errors carry the client secret in their config).
 
 ### API gotchas that cost time (put these in `demo/lib/verify.js`)
 - SCIM paths (`/v2.0/Users`, `/v2.0/Groups`) need `Content-Type` **and** `Accept: application/scim+json` (otherwise 406 `CSIAI0211E` / 415 `CSIAI0212E`).
@@ -100,7 +108,9 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 **IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06). Also ask IBM to confirm: multiple custom IdP domains, delegated admin per brand, an mTLS endpoint on SaaS, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
 
 **The human must do** (checklist in `DEMO-BUILD-GUIDE.md` section 3):
-- Install the IBM Verify app on 1–2 phones (UC-04, 06, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
+- Install the IBM Verify app on 1–2 phones (UC-04, 06, 07, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
+- **UC-07 browser path:** sign in to TrustMeInsurance as `ifc-demo-uc07-marie` (password in `demo/out/uc07.state.json`, key `user.password`), then Help > "Speak with a Voicebot". The real app has "Require 2FA for MFAGroup" and no password grant, so this login cannot be scripted.
+- **Confirm with IFC:** the PDF's UC-07 main flow still says "User enters the OTP received via Voicebot", which contradicts the title. The demo skips the OTP for a valid app session and keeps it as the fallback.
 - Set up a public tunnel (ngrok or cloudflared) for webhooks and back-channel logout (UC-05, 08, 13).
 - Run `mkcert -install` and add `127.0.0.1 ifc-demo.local` to `/etc/hosts` (UC-02).
 - Provide a readable test mailbox (UC-01, 03, 06, 14).
@@ -110,15 +120,14 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 
 ## 8. What to start building next
 
-**Foundation and UC-06 are done.** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-06 and UC-07 are done.** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
-1. **Close UC-06 (15 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. If it passes, UC-06 push moves from `[DOCS]` to `[LIVE]` and the guide must be updated. Then rehearse `node demo/uc06-voice/caller.js`.
-2. **UC-07 next**, because it reuses the UC-06 stub (`stubs/voicebot-ccaas`): add `/handoff` that introspects the app's token, skips the OTP for tier 1 and keeps step-up for tier 2. STS client creation is already proven.
-3. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03.
-4. **UC-02, UC-08, UC-04** (need browser, phone or tunnel), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
-5. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, now including SMS/voice OTP enablement).
+1. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
+2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 must not assert an `act` claim**: the exchanged token has none (finding 20). UC-09 can reuse `ensureStsClient` and `oauthClient().exchange` from `demo/lib`.
+3. **UC-02, UC-08, UC-04** (need browser, phone or tunnel), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
+4. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
-Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `deleteUser`...), `demo/lib/totp.js`, `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients named `ifc-demo-*`; extend `inventory()` if a new object type appears). `demo/uc06-voice/common.js` has `nextTotpCode()` for scripted TOTP.
+Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `oauthClient` for introspect/revoke/exchange/password grant, `send` with DNS retry, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `deleteUser`...), `demo/lib/totp.js` (`totpPlayer`), `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients named `ifc-demo-*`; extend `inventory()` if a new object type appears). **`teardown-all.js` also deletes other use cases' objects**: re-run their `setup.js` afterwards.
 Per-use-case folders look like `demo/ucNN-*/` with `setup.js`, `run.js`, `verify.js`, `teardown.js` and a `README.md`. **When a demo is built, update the readiness label in the runbook summary table.**
 
 ### Commands
@@ -128,10 +137,11 @@ curl -X POST localhost:3000/setup      # must return 200
 node demo/00-probe.js                  # 12/12 expected
 node demo/teardown-all.js --list       # what ifc-demo-* objects exist
 node demo/uc06-voice/setup.js && node demo/uc06-voice/verify.js
+node demo/uc07-handoff/setup.js && node demo/uc07-handoff/run.js && node demo/uc07-handoff/verify.js
 ```
 
 ### Suggested first prompt for the next session
-> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2 and the UC-07 parts. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then build UC-07 end to end reusing `stubs/voicebot-ccaas` and `demo/lib`. Write evidence to `demo/out/uc07.json`. Don't print `.env` values.
+> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2 and the UC-13 parts. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then build UC-13 end to end reusing `demo/lib` (and `ensureStsClient` / `oauthClient` for token work). Write evidence to `demo/out/uc13.json`. Don't print `.env` values.
 
 ## 9. Tooling that was used and may no longer exist (outside the repo)
 
