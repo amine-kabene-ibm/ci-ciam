@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-10 (UC-07 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-10 (UC-08 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -23,13 +23,14 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | **Demo foundation**: `demo/lib/{verify,idempotent,totp}.js`, `demo/00-probe.js` (12 live checks), `demo/teardown-all.js` | `demo/` | Done, run on the tenant |
 | **UC-06 Voicebot**: `stubs/voicebot-ccaas/`, `demo/uc06-voice/` (setup, run, caller, enroll-phone, verify, teardown, README) | `demo/uc06-voice/` | **Built, PARTIAL.** E-mail OTP + TOTP step-up verified live (32/32, `demo/out/uc06.json`). Push and passkey step-up not proven: need a phone / browser `[HUMAN]` |
 | **UC-07 App-to-voice handoff**: `demo/uc07-handoff/` (setup, run, serve, voice, verify, teardown, README), `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `/handoff` in `stubs/voicebot-ccaas` | `demo/uc07-handoff/` | **Built, PARTIAL.** Verify side proven live: 48/48 scenarios (`demo/out/uc07.json`), `verify.js` 21 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser login to the app (2FA policy), push, passkey `[HUMAN]` |
+| **UC-08 SSO and global logout**: `demo/uc08-sso/` (setup, run, serve, verify, teardown, README, browser), `stubs/rp-sso/` | `demo/uc08-sso/` | **Built, PARTIAL.** Verified live: 37/37 scenarios (`demo/out/uc08.json`), `verify.js` 14 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser, back-channel delivery (tunnel), idle/absolute timeouts (no API) `[HUMAN]` |
 
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation, **UC-06** and **UC-07** (see section 2). **Everything else is still only described in the build guide:** the other 13 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-06**, **UC-07** and **UC-08** (see section 2). **Everything else is still only described in the build guide:** the other 12 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -75,6 +76,10 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 20. **Token exchange (RFC 8693) works** with an STS client, but `audience` is ignored (`aud` = the STS client id) and there is **no `act` claim**, even with an `actor_token`. `actorTokenRequired:true` makes the actor mandatory (`CSIAQ5242E`). A revoked or tampered subject token gives `400 CSIAQ0158E`. The exchanged token is NOT revoked when the original is revoked; deactivating the user kills both. STS lifetime field is `tokenSettings.accessTokenLifetime`.
 21. **Scripted login:** the password grant works on `/oidc/endpoint/default/token` for a DCR client with `grant_types:["password"]` and `all_users_entitled:true`.
 22. **The laptop resolver intermittently fails** (`ENOTFOUND` on the tenant host for tens of seconds). `send()` in `demo/lib/verify.js` retries and rethrows message-only errors (axios errors carry the client secret in their config).
+23. **SSO and logout (UC-08):** discovery advertises front- and back-channel logout. DCR takes `frontchannel_logout_uri` or `backchannel_logout_uri` (not both: front wins, back is dropped). `PUT <app href>` with the full GET document edits `logoutOption`, `accessTokenExpiry`, `authPolicy`.
+24. **Cross-app SSO works:** later apps get a code with no page, all share one `sid`, one entry in `GET /v1.0/auth/sessions/{userId}`. `ACTION_MFA_ALWAYS` re-asks only TOTP; `ACTION_MFA_PER_SESSION` does not re-ask. Policy group conditions match the token's `groupIds`, which holds group **names**. A TOTP enrolment must be validated (`POST /v2.0/factors/totp/{id}` `{otp}` = 204) before login can use it (`CSIAH0640E` otherwise).
+25. **Global logout = `rplogout` page in a browser:** it returns an HTML page with an iframe per app and the tenant's own, auto-submits after 3 s. The Verify session is only cleared when that page runs. After it: sessions `{}`, token `active:false`, refresh `invalid_grant`. `DELETE /v1.0/auth/sessions/{userId}` = 204 kills tokens at once but not an app's own cookie.
+26. **Correction to 19:** the ID token and userinfo DO carry `auth_time`, `acr`, `amr`, `sid`, `groupIds`; only introspection lacks `auth_time`/`acr`. `state`/`nonce` need 8+ chars. **No session-policy API** (idle/absolute timeouts): every candidate path returns the console login page.
 
 ### API gotchas that cost time (put these in `demo/lib/verify.js`)
 - SCIM paths (`/v2.0/Users`, `/v2.0/Groups`) need `Content-Type` **and** `Accept: application/scim+json` (otherwise 406 `CSIAI0211E` / 415 `CSIAI0212E`).
@@ -111,7 +116,8 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 - Install the IBM Verify app on 1–2 phones (UC-04, 06, 07, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
 - **UC-07 browser path:** sign in to TrustMeInsurance as `ifc-demo-uc07-marie` (password in `demo/out/uc07.state.json`, key `user.password`), then Help > "Speak with a Voicebot". The real app has "Require 2FA for MFAGroup" and no password grant, so this login cannot be scripted.
 - **Confirm with IFC:** the PDF's UC-07 main flow still says "User enters the OTP received via Voicebot", which contradicts the title. The demo skips the OTP for a valid app session and keeps it as the fallback.
-- Set up a public tunnel (ngrok or cloudflared) for webhooks and back-channel logout (UC-05, 08, 13).
+- Set up a public tunnel (ngrok or cloudflared) for webhooks and back-channel logout (UC-05, 08, 13). cloudflared and ngrok are not installed.
+- **UC-08 browser path:** `node demo/uc08-sso/setup.js && node demo/uc08-sso/serve.js`, sign in at http://localhost:4001 as `ifc-demo-uc08-broker` (password `users.broker.password`, TOTP key `totp.secret` in `demo/out/uc08.state.json`), open :4002 and :4003, log out of one. Back-channel: tunnel to :4001, then `node demo/uc08-sso/setup.js --backchannel https://<public>`.
 - Run `mkcert -install` and add `127.0.0.1 ifc-demo.local` to `/etc/hosts` (UC-02).
 - Provide a readable test mailbox (UC-01, 03, 06, 14).
 - Decide whether Podman may pull the OpenFGA and Verify Bridge images (UC-11, 12). Podman is at `/opt/podman/bin/podman`. Docker is not installed. Node is v24.7.0. Go is not installed.
@@ -120,14 +126,14 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 
 ## 8. What to start building next
 
-**Foundation, UC-06 and UC-07 are done.** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-06, UC-07 and UC-08 are done (UC-08 browser/back-channel pending a human).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
 1. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
 2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 must not assert an `act` claim**: the exchanged token has none (finding 20). UC-09 can reuse `ensureStsClient` and `oauthClient().exchange` from `demo/lib`.
-3. **UC-02, UC-08, UC-04** (need browser, phone or tunnel), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
+3. **UC-02, UC-04** (need browser or phone), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
 4. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
-Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `oauthClient` for introspect/revoke/exchange/password grant, `send` with DNS retry, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `deleteUser`...), `demo/lib/totp.js` (`totpPlayer`), `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients named `ifc-demo-*`; extend `inventory()` if a new object type appears). **`teardown-all.js` also deletes other use cases' objects**: re-run their `setup.js` afterwards.
+Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `oauthClient` for introspect/revoke/exchange/password grant, `send` with DNS retry, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `updateApplication`, `ensureGroupMember`, `ensurePolicy`, `deleteUser`...), `demo/lib/totp.js` (`totpPlayer`), `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients named `ifc-demo-*`; extend `inventory()` if a new object type appears). **`teardown-all.js` also deletes other use cases' objects**: re-run their `setup.js` afterwards.
 Per-use-case folders look like `demo/ucNN-*/` with `setup.js`, `run.js`, `verify.js`, `teardown.js` and a `README.md`. **When a demo is built, update the readiness label in the runbook summary table.**
 
 ### Commands
@@ -138,6 +144,7 @@ node demo/00-probe.js                  # 12/12 expected
 node demo/teardown-all.js --list       # what ifc-demo-* objects exist
 node demo/uc06-voice/setup.js && node demo/uc06-voice/verify.js
 node demo/uc07-handoff/setup.js && node demo/uc07-handoff/run.js && node demo/uc07-handoff/verify.js
+node demo/uc08-sso/setup.js && node demo/uc08-sso/verify.js     # then: node demo/uc08-sso/serve.js for the browser demo
 ```
 
 ### Suggested first prompt for the next session

@@ -187,6 +187,67 @@ async function deleteApplicationsByPrefix(prefix) {
   return out;
 }
 
+// Change a registered application's OIDC settings in place (GET, mutate, PUT). `mutate(app)` edits the full application document
+// (e.g. app.providers.oidc.properties.accessTokenExpiry, .additionalConfig.logoutOption). Returns the PUT status. [LIVE] PUT returns 200, empty body.
+async function updateApplication(name, mutate) {
+  const x = (await listApplications()).find((a) => a.name === name);
+  if (!x) throw new Error(`updateApplication: ${name} not found`);
+  const g = await api('GET', x._links.self.href);
+  if (g.status !== 200) throw new Error(`get application ${name}: HTTP ${g.status} cid=${g.cid}`);
+  mutate(g.data);
+  const p = await api('PUT', x._links.self.href, { body: g.data });
+  if (p.status !== 200) throw new Error(`update application ${name}: HTTP ${p.status} cid=${p.cid}`);
+  return p.status;
+}
+
+// Group membership by SCIM PATCH (204). Safe to repeat: checks the current members first.
+async function ensureGroupMember(groupId, userId) {
+  const g = await api('GET', `/v2.0/Groups/${groupId}`);
+  if (g.status === 200 && (g.data.members || []).some((m) => m.value === userId)) return { added: false };
+  const r = await api('PATCH', `/v2.0/Groups/${groupId}`, {
+    body: { schemas: ['urn:ietf:params:scim:api:messages:2.0:PatchOp'], Operations: [{ op: 'add', path: 'members', value: [{ value: userId, type: 'user' }] }] },
+  });
+  if (r.status !== 204) throw new Error(`add ${userId} to group ${groupId}: HTTP ${r.status} cid=${r.cid}`);
+  return { added: true };
+}
+
+// Access policies, v5.0 [LIVE]. rules = [{name, conditions, action, authnMethods}] where action is one of ACTION_ALLOW, ACTION_MFA_ALWAYS,
+// ACTION_MFA_PER_SESSION, ACTION_DENY (ACTION_MFA_PERSIST does not exist: CSIBI0006E). authnMethods values: 'totp', 'emailotp', 'fido2', 'smsotp',
+// 'anyFactor', ... or 'urn:ibm:security:authentication:asf:macotp' (the bare asf:totp URN is rejected, CSIBI0071E).
+// Group conditions compare against the token's `groupIds`, which holds group NAMES (not SCIM ids): use the displayName.
+// Creates the policy, or replaces its rules when they drifted. Returns {id, created, updated}.
+async function ensurePolicy(name, description, rules) {
+  if (!name.startsWith(PREFIX)) throw new Error(`policy name must start with ${PREFIX}`);
+  const wanted = rules.map((r) => ({
+    alwaysRun: false, firstFactor: false, name: r.name, conditions: r.conditions || [],
+    result: { action: r.action, authnMethods: r.authnMethods || ['totp'], serverSideActions: [] },
+  }));
+  const body = { containsFirstFactor: false, description, name, meta: { state: 'ACTIVE', schema: 'urn:access:policy:5.0:schema', enforcementType: 'fedSSO' }, rules: wanted };
+  const l = await api('GET', '/v5.0/policyvault/accesspolicy', { query: { search: `name="${q(name)}"` } });
+  if (l.status !== 200) throw new Error(`find policy ${name}: HTTP ${l.status} cid=${l.cid}`);
+  const found = (l.data.policies || []).find((p) => p.name === name);
+  if (!found) {
+    const c = await api('POST', '/v5.0/policyvault/accesspolicy', { body });
+    if (c.status !== 201) throw new Error(`create policy ${name}: HTTP ${c.status} cid=${c.cid}`);
+    return { id: String(c.data.id), created: true, updated: false };
+  }
+  const g = await api('GET', `/v5.0/policyvault/accesspolicy/${found.id}`);
+  const shape = (rs) => JSON.stringify(rs.map((r) => [r.name, r.conditions, r.result.action, r.result.authnMethods]));
+  if (g.status === 200 && shape(g.data.rules || []) === shape(wanted)) return { id: String(found.id), created: false, updated: false };
+  const u = await api('PUT', `/v5.0/policyvault/accesspolicy/${found.id}`, { body: { ...g.data, description, rules: wanted } });
+  if (u.status !== 200 && u.status !== 201) throw new Error(`update policy ${name}: HTTP ${u.status} cid=${u.cid}`);
+  return { id: String(found.id), created: false, updated: true };
+}
+
+async function deletePoliciesByPrefix(prefix) {
+  const r = await api('GET', '/v5.0/policyvault/accesspolicy', { query: { search: `name contains "${q(prefix)}"` } });
+  const out = [];
+  for (const p of ((r.data && r.data.policies) || []).filter((x) => x.name.startsWith(prefix))) {
+    out.push({ name: p.name, status: (await api('DELETE', `/v5.0/policyvault/accesspolicy/${p.id}`, { quiet: true })).status });
+  }
+  return out;
+}
+
 async function ensureDcrClient(name, body, prev) {
   if (!name.startsWith(PREFIX)) throw new Error(`application name must start with ${PREFIX}`);
   if (prev && prev.registrationUri) {
@@ -203,7 +264,8 @@ async function ensureDcrClient(name, body, prev) {
 }
 
 module.exports = {
-  findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix,
+  findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix, ensureGroupMember,
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
+  updateApplication, ensurePolicy, deletePoliciesByPrefix,
 };

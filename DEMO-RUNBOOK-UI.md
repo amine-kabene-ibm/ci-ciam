@@ -33,7 +33,7 @@
 | 05 | Adaptive risk and fraud | PARTIAL NOW (policy view) / NEEDS BUILD + IBM | Admin console, risk stub | Threat detection inactive; IFC signals go in as `external_risk` webhook, not as Trusteer model features |
 | 06 | Voicebot | **READY NOW** for e-mail OTP + authenticator-code step-up (scripted 32/32 `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) and passkey | Terminal "caller", admin console, mailbox | Voice is simulated; SMS/voice OTP blocked on this tenant (e-mail OTP used); push and passkey step-up not yet proven |
 | 07 | App-to-voice handoff | **READY NOW** for the scripted app (terminal, 48/48 `[LIVE]`) / NEEDS HUMAN SETUP for the browser login to the real demo app, push and passkey | Terminal "app + caller", demo app Help page, admin console | Voice and the CCaaS are simulated; browser path and push not yet executed; IFC's own flow text still says "enter the OTP" (confirm) |
-| 08 | SSO and global logout | NEEDS BUILD + tunnel | Browser with 3 stub apps | Idle/absolute session policy has no API found |
+| 08 | SSO and global logout | **READY NOW** for the scripted terminal path (37/37 `[LIVE]`) / NEEDS HUMAN SETUP for the real browser and back-channel (tunnel) | Browser with 3 stub apps on :4001-4003, terminal, admin console | Idle/absolute session policy has no API (confirmed); admin session kill leaves an app that trusts its own cookie signed in; back-channel delivery not yet executed |
 | 09 | API security | NEEDS BUILD (scripts proven) | Terminal + admin console | mTLS handshake not proven; do not claim it until tested |
 | 10 | Per-brand login | NEEDS IBM (branding blocked on trial) | Two apps, login page | No sub-tenants (reseller only); themes blocked; delegated admin unconfirmed |
 | 11 | Legacy migration | NEEDS BUILD (bulk) / NEEDS IBM (JIT) | Terminal, login page, admin console | JIT needs Flow designer or Bridge |
@@ -329,23 +329,42 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-08: SSO across apps and global logout
 
-**Readiness:** NEEDS BUILD + tunnel.
+**Readiness:** READY NOW for the scripted path (`node demo/uc08-sso/run.js`, 37/37 `[LIVE]`). NEEDS HUMAN SETUP for the real browser and for back-channel logout (needs a tunnel).
 
-**Prerequisites:** three stub RPs on :4001-4003 with public URLs for back-channel logout; broker and consumer personas.
+**Prerequisites**
+- `node demo/uc08-sso/setup.js` (idempotent), then `node demo/uc08-sso/run.js` once before the session (about 1 min). It must end `37/37 checks passed`.
+- Browser path: `node demo/uc08-sso/serve.js` (apps on :4001 portal, :4002 claims, :4003 quote). Broker password: `demo/out/uc08.state.json` key `users.broker.password` (do not show the file). TOTP: authenticator app with key `totp.secret`, or `node -e "const t=require('./demo/lib/totp');console.log(t.totp(require('./demo/out/uc08.state.json').totp.secret))"`.
 
-**Click path**
-1. One browser window. Open RP-A → sign in (password + MFA for broker persona).
-2. Open RP-B and RP-C in new tabs: no login prompts (SSO).
-3. Log out of RP-A. Refresh RP-B and RP-C: both are signed out (back-channel logout).
-4. Show persona difference: sign in as a consumer; no MFA required by policy.
+**Click path A: browser, one window** `[HUMAN]` (the protocol is proven by script; the pixels are not)
+1. Open `http://localhost:4001` > Sign in as `ifc-demo-uc08-broker`: password, then TOTP.
+2. New tab `http://localhost:4002` > Sign in: no password, no TOTP (one SSO session). New tab `http://localhost:4003` > Sign in: **TOTP only** (this app's policy is "second factor at every sign-in"; the password is not asked).
+3. Click **Log out** on any app. The tenant's logout page flashes for about 3 s (keep the tab open). Reload the other two tabs: both show the login page.
+4. Contrast: sign in again, use **Local logout** on one app, reload it: it signs back in silently (the SSO session is still alive).
+5. Persona: sign in at :4002 as `ifc-demo-uc08-client`: the claims app answers 403 (brokers only). At :4001 the policyholder is never asked for TOTP.
 
-**Talk track:** "One session, many apps. One logout, all apps. Policies differ by persona."
+**Click path B: terminal only** `node demo/uc08-sso/run.js`
+1. Scenarios A to H print PASS lines: SSO across 3 apps, per-app authorization, global logout, local-logout contrast, admin session kill, silent check / forced re-auth, back-channel handler checks, session-limit probe.
+2. Evidence in `demo/out/uc08.json` (status codes, ids, timings; no secrets).
 
-**Show in admin console:** The three registered apps and their logout settings; sessions.
+**Talk track:** "One sign-in, many applications. The tenant keeps one session and every app joins it, so no second password. How strongly each app asks is policy: brokers get a second factor, policyholders do not, and the quoting app asks the broker again. One logout ends it everywhere: the tenant tells every app, and the tokens die at once. And if an administrator ends a session, tokens die immediately; apps that check the token on each call lose access on the next click."
 
-**If it breaks:** If back-channel callbacks fail (tunnel down), show front-channel logout instead.
+**Show in admin console:** Applications `ifc-demo-uc08-rp-portal`/`-claims`/`-quote` and their logout setting (front channel) and token lifetime; Access policies `ifc-demo-uc08-policy-standard`/`-high`; Users > `ifc-demo-uc08-broker` > sessions. Menu names vary by release; confirm in rehearsal.
 
-**Honest limitation:** Idle and absolute session timeouts have no API found; use per-app token lifetimes and say so.
+**Back-channel variant** `[HUMAN]`: `brew install cloudflared`, `cloudflared tunnel --url http://localhost:4001`, `node demo/uc08-sso/setup.js --backchannel https://<public>`, `node demo/uc08-sso/serve.js`. After logout, `http://localhost:4001/_events` shows `backchannel` events. Switch back with `node demo/uc08-sso/setup.js`.
+
+**If it breaks**
+- Port in use (:4001-4003): stop the old `serve.js` / `run.js`.
+- A tab does not log out: the tenant logout page was closed before its 3 s auto-submit. Log out again and keep the tab open, or use the back-channel variant.
+- Login says "none of the permitted factors are configured" (`CSIAH0640E`): the broker's TOTP was not validated; re-run `node demo/uc08-sso/setup.js`.
+- `CSIAQ5025E` / `CSIAQ5082E`: `state` / `nonce` shorter than 8 characters (stub apps already comply).
+- Wrong TOTP: each 30 s code works once; wait for the next window.
+- Anything else: `node demo/uc08-sso/setup.js` then `node demo/uc08-sso/run.js`.
+
+**Honest limitation**
+- **Idle and absolute session timeouts have no API** (every candidate path returns the console login page). Per-persona lifetimes here are per-app token lifetimes and per-app policies. Do not show a "session policy" screen unless you have confirmed it exists in your console.
+- Front-channel logout relies on the browser; back-channel needs a public URL and was not executed (token format is `[DOCS]` OIDC Back-Channel Logout 1.0).
+- After an admin kill, an app that trusts its own cookie (the portal in the test) still shows the user as signed in until it introspects or receives back-channel logout.
+- The three apps are stubs written for the demo; IFC's real apps need an OIDC client with the same logout fields.
 
 ---
 

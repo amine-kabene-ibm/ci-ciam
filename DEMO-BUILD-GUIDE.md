@@ -51,6 +51,10 @@ Everything below is tagged by how I know it.
 | 24 | Email suppression list: a delivery failure suppresses the address; later OTPs to it return 400 `CSIBN0075E`. `GET`/`DELETE /v1.0/notification/suppression/email/{address}`. | Do not use fake `@example.com` mailboxes for OTP demos. |
 | 25 | `POST /v1.0/authenticators/initiation` with `Accept: image/png` returns the IBM Verify app registration QR. | UC-04 and UC-06 phone enrolment can be scripted up to the scan. |
 | 26 | Token exchange and introspection work (UC-07, 2026-11-10): `POST /oauth2/introspect` with an STS client (HTTP Basic) returns `active`, `sub`, `amr`, `exp`, `client_id`, `grant_type`; `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` returns a token of `tokenSettings.accessTokenLifetime`. `audience` is ignored, no `act` claim, the exchanged token survives revocation of the original but not user deactivation. Access tokens are opaque (no offline validation). | UC-07 is built on this. UC-09 token exchange / on-behalf-of reuses it: the `audience` and `act` expectations in the plan are wrong. |
+| 27 | SSO and logout (UC-08, 2026-11-10): discovery advertises `frontchannel_logout_supported`, `backchannel_logout_supported`, `end_session_endpoint` = `/v1.0/endpoint/default/rplogout`. DCR takes `frontchannel_logout_uri` / `backchannel_logout_uri` (+ `_session_required`, `post_logout_redirect_uris`); if both are sent, front-channel wins and the back-channel URI is silently dropped. `PUT` on the application (full GET document) changes `logoutOption`, `accessTokenExpiry`, `authPolicy`. | UC-08 is built on this. |
+| 28 | Cross-app SSO (UC-08): the 2nd/3rd app's `/authorize` returns a code with no page; all apps share one `sid`; one entry in `GET /v1.0/auth/sessions/{userId}`. `ACTION_MFA_ALWAYS` on a later app re-asks only TOTP; `ACTION_MFA_PER_SESSION` does not re-ask. Policy group conditions compare to the token's `groupIds`, which holds group **names**, not SCIM ids. A TOTP enrolment must be validated once (`POST /v2.0/factors/totp/{id}` `{otp}` = 204) before login can use it. | Per-persona/per-app assurance without a session-policy object. |
+| 29 | Global logout (UC-08): `rplogout?id_token_hint&post_logout_redirect_uri&state` returns an HTML page with one iframe per app (`<rp>/frontchannel-logout?iss&sid`) plus the tenant's own, then auto-submits a status form after 3 s and redirects. **The Verify session is only cleared when that page runs.** Afterwards: sessions `{}`, access token `active:false` at once, refresh `invalid_grant`. `DELETE /v1.0/auth/sessions/{userId}` = 204 and kills tokens at once, but an app trusting its own cookie stays signed in. | Front-channel needs the browser to stay open about 3 s; back-channel is the answer for admin kills. |
+| 30 | ID token carries `acr`, `amr`, `auth_time`, `sid`, `sub`, `iss`, `groupIds`. **Correction to finding 19/UC-07:** only *introspection* lacks `auth_time`/`acr`; the ID token and userinfo have them. `state`/`nonce` need 8+ chars. No session-policy API exists (every candidate path answers with the console login page). | Idle/absolute timeouts cannot be scripted; use per-app `accessTokenExpiry`. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -300,18 +304,32 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-08: SSO across apps and global logout
 
-**Status:** Bob can build; a browser is required to observe SSO.
+**Status: BUILT, PARTIAL.** Everything the tenant does is proven by script (37/37 checks, `verify.js` 14 PASS / 0 FAIL / 3 HUMAN). Not executed: the same flow in a real browser, back-channel delivery (needs a tunnel), idle/absolute timeouts (no API).
 
-**Build steps**
-1. `stubs/rp-a`, `rp-b`, `rp-c` (ports 4001-4003), each a tiny OIDC RP (reuse `passport-openidconnect` from this repo) that exposes `/backchannel-logout`.
-2. Register them with `POST /oauth2/register` (proven `[LIVE]`), including `backchannel_logout_uri` `[DOCS]` (field name in DCR; test) or through `POST /v1.0/applications` with `additionalConfig.logoutOption:"back_channel"`, `logoutURI`.
-3. Public reachability: back-channel logout calls come from the tenant, so the RPs need public URLs (tunnel).
-4. Persona separation: two groups (`ifc-demo-brokers`, `ifc-demo-consumers`) and two policies (brokers MFA always; consumers allow). Attach per app.
-5. `demo/uc08-sso/verify.js`: uses `GET /v1.0/auth/sessions/{userId}` before and after logout to prove the session list shrinks.
+**Built**
+- `stubs/rp-sso/server.js`: a small OIDC relying party (code + PKCE, RS256 ID-token check against the tenant JWKS) with `/login`, `/callback`, `/protected`, `/logout` (global), `/local-logout`, `/frontchannel-logout`, `/backchannel-logout`, `/bc/:name`, `/_events`. Three instances: portal :4001, claims :4002 (brokers only, introspects each request), quote :4003 (high assurance).
+- `demo/uc08-sso/`: `setup.js` (`--backchannel https://<public>` switches logout mode), `browser.js` (scripted browser: cookie jars, hosted login, TOTP page, front-channel iframes), `run.js` (scenarios A-H), `serve.js`, `verify.js`, `teardown.js`, `README.md`.
+- Helpers added to `demo/lib/idempotent.js`: `updateApplication`, `ensureGroupMember`, `ensurePolicy`, `deletePoliciesByPrefix`.
+- Tenant objects: groups `ifc-demo-uc08-brokers`/`-consumers`, users `ifc-demo-uc08-broker` (+ validated TOTP) / `-client`, policies `ifc-demo-uc08-policy-standard` (brokers TOTP once per SSO session) / `-high` (brokers TOTP at every sign-in), applications `ifc-demo-uc08-rp-portal`/`-claims`/`-quote` (token 7200/900/1800 s).
 
-**Human steps:** `[HUMAN]` sign in once in a browser, open the three apps, log out from one.
+**Proven `[LIVE]`** (details in findings 27-30 above)
+- One login, three apps: same `sid`, one session in the sessions API, no second password prompt; per-app assurance (broker TOTP once, again at the high-assurance app; policyholder never).
+- App-side persona authorization: claims app answers 403 to a policyholder.
+- Global logout from one app clears all three apps, the Verify session list, the access token (`active:false`), the refresh token (`invalid_grant`); the next visit shows the login page. Local logout contrast: app-only logout leaves the Verify session and the app silently signs back in.
+- Admin session kill (`DELETE /v1.0/auth/sessions/{id}`): tokens die at once; an app that introspects per request returns 401, an app trusting its own session still returns 200 (honest gap; back-channel closes it `[DOCS]`).
+- `prompt=none` / `max_age` behave correctly. DCR accepts `backchannel_logout_uri`; logout with an unreachable receiver still completes (about 650 ms). The RP back-channel handler rejects garbage, an ordinary ID token and tampered tokens.
 
-**Open risks:** session-policy objects (idle/absolute timeouts) have no API found; use per-app token lifetimes.
+**Corrections to the earlier plan `[LIVE]`**
+- `backchannel_logout_uri` in DCR is accepted (was "[DOCS] test"), but only when `frontchannel_logout_uri` is **not** also sent.
+- "Session-policy has no API" was `[INFER]`; it is now `[LIVE]` (all candidate paths return the console login page).
+- The build step "RPs need public URLs" applies to **back-channel only**. Front-channel logout works on localhost, because the browser calls the apps.
+- Step 5 of the old plan (sessions API before/after) is done: `GET /v1.0/auth/sessions/{userId}`; `GET /v1.0/auth/sessions` without a user is 405.
+
+**Human steps `[HUMAN]`** (commands in `demo/uc08-sso/README.md`)
+1. Real browser: `node demo/uc08-sso/setup.js && node demo/uc08-sso/serve.js`, sign in at :4001 as the broker (password in `demo/out/uc08.state.json` `users.broker.password`, TOTP from `totp.secret`), open :4002 and :4003, log out of one.
+2. Back-channel: `brew install cloudflared`, `cloudflared tunnel --url http://localhost:4001`, `node demo/uc08-sso/setup.js --backchannel https://<public>`, `node demo/uc08-sso/serve.js`, repeat, check `http://localhost:4001/_events`.
+
+**Open risks:** idle/absolute timeouts have no API (use per-app token lifetimes, or ask IBM whether they are console-only); front-channel logout depends on the browser staying open about 3 s.
 
 ---
 
@@ -448,6 +466,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 6 | Run the passkey ceremony once in a browser. | UC-02 | 5 min |
 | 7 | Decide whether Podman images (OpenFGA, Verify Bridge) may be pulled on this machine. | UC-11, UC-12 | 5 min |
 | 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
+| 9 | UC-08 real browser + back-channel: `node demo/uc08-sso/serve.js`, then tunnel and `setup.js --backchannel` (steps in UC-08 above). | UC-08 | 15 min |
 
 ## 4. Message to IBM (copy/paste)
 
@@ -464,7 +483,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
 2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
-4. **UC-02, UC-08, UC-04** (need browser/phone/tunnel).
+4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
 5. **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
 
 ## 6. Changes made to the repo during this session
@@ -479,4 +498,4 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `stubs/voicebot-ccaas/server.js`, `backends.js`, `demo/uc07-handoff/` | UC-07: `/handoff`, `/agent`, session-bridge checks, customer `ifc-demo-uc07-marie`, scenario scripts | Section 2, UC-07 |
 | `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `app.js` (1 require + 1 mount), `views/layout.hbs` (Help link) | UC-07: the "Speak with a Voicebot" button in the demo app | Section 2, UC-07 |
 | `demo/lib/verify.js` (`oauthClient`, `send` with DNS retry), `demo/lib/idempotent.js` (TOTP, STS, DCR helpers), `demo/lib/totp.js` (`totpPlayer`), `demo/uc06-voice/{common,setup}.js` | Shared helpers extracted for UC-07; UC-06 behaviour unchanged (32/32) | Section 1 |
-
+| `stubs/rp-sso/`, `demo/uc08-sso/`, `demo/lib/idempotent.js` (4 helpers added) | UC-08: three RP stubs, scripted browser, scenarios, verify/teardown | Section 2, UC-08 |
