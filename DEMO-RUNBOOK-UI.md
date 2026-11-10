@@ -31,7 +31,7 @@
 | 03 | Risk-aware recovery, agent-assisted | PARTIAL NOW (app forgot-password) / NEEDS BUILD (agent console) | Demo app, agent page, admin console events | No AI risk score without Adaptive access |
 | 04 | Trusted devices, push, revoke | NEEDS IBM / HUMAN SETUP | IBM Verify app on phone, admin console | Two registrations for one user unconfirmed |
 | 05 | Adaptive risk and fraud | PARTIAL NOW (policy view) / NEEDS BUILD + IBM | Admin console, risk stub | Threat detection inactive; IFC signals go in as `external_risk` webhook, not as Trusteer model features |
-| 06 | Voicebot | NEEDS BUILD | CLI "caller" or simple web page | Voice is simulated; Verify is the identity/step-up engine only |
+| 06 | Voicebot | **READY NOW** for e-mail OTP + authenticator-code step-up (scripted 32/32 `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) and passkey | Terminal "caller", admin console, mailbox | Voice is simulated; SMS/voice OTP blocked on this tenant (e-mail OTP used); push and passkey step-up not yet proven |
 | 07 | App-to-voice handoff | NEEDS BUILD | Demo app + stub | None significant |
 | 08 | SSO and global logout | NEEDS BUILD + tunnel | Browser with 3 stub apps | Idle/absolute session policy has no API found |
 | 09 | API security | NEEDS BUILD (scripts proven) | Terminal + admin console | mTLS handshake not proven; do not claim it until tested |
@@ -246,24 +246,40 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-06: Voicebot (CCaaS) information query and transactions
 
-**Readiness:** NEEDS BUILD.
+**Readiness:** READY NOW for the e-mail OTP and authenticator-code (TOTP) paths. Push step-up is NEEDS HUMAN SETUP (register a phone, 5 min). Passkey step-up is not built.
 
 **Prerequisites**
-- `stubs/voicebot-ccaas` on :4030; `demo/uc06-voice/caller.js`.
-- Test user with email and (for step-up) a registered phone.
+- `node demo/uc06-voice/setup.js` (idempotent). Demo customer: Marie Tremblay, policy `AUTO-48213`. Her e-mail is the tenant admin mailbox, so keep that mailbox open.
+- Optional, for the push moment `[HUMAN]`: IBM Verify app on a phone, then `node demo/uc06-voice/enroll-phone.js` and scan the QR.
+- Run `node demo/uc06-voice/run.js` once before the session (20 s to 2 min, it waits for TOTP windows). It must end `32/32 checks passed`. Then wait about 1.5 min before presenting, so `caller.js` has fresh TOTP windows.
 
-**Click path**
-1. Terminal: `node demo/uc06-voice/caller.js`. The "caller" gives a policy number/email.
-2. Bot identifies the customer (SCIM lookup) and asks a question: "What's my renewal date?" (low risk, only light verification: OTP).
-3. Caller reads the OTP from the mailbox. Bot answers.
-4. Caller asks for a sensitive transaction (change bank account). Bot triggers **push step-up**. Approve on the phone.
-5. Transcript prints with Verify transaction ids.
+**Click path** (terminal: `node demo/uc06-voice/caller.js`)
+1. The bot greets. Type the policy number `AUTO-48213`. The bot looks the customer up in Verify (SCIM) and offers an e-mail code.
+2. Choose `1` (e-mail me a code). Verify sends a real e-mail to the address on file. Read the code in the mailbox: it looks like `4821-305917`. **Type only the digits after the dash** (`305917`).
+3. Choose request `1` ("What is my outstanding bill amount?"). Answer comes from the mock Billing API. Try `3` (pink slip e-mailed to the address on file) and `4` (storage): all tier 1, no extra proof.
+4. Choose request `5` (change my e-mail). The bot refuses until one more approval: choose `push` and approve on the phone, or `totp` and type `auto` (the script plays the authenticator app) or a real code from an authenticator app.
+5. The request succeeds. Ask for `6` (change bank account) right after: a new step-up is demanded (one step-up approves one sensitive action).
+6. Hang up (`0`). The call prints every Verify API call with HTTP status, duration and `x-correlation-id`.
 
-**Talk track:** "Risk-tiered verification: information queries need a lighter proof than money movement. Verify supplies the proof, the CCaaS orchestrates the conversation."
+**Talk track:** "Risk-tiered verification: an information query needs one light proof, money or contact-detail changes need a second, stronger one. Verify supplies the OTP, the authenticator-code check and the push approval as APIs; the contact-centre platform orchestrates the conversation. The voicebot runs on an API client with five entitlements, not the admin credential."
 
-**Show in admin console:** Events for OTP and push verification.
+**Show in admin console**
+- Admin console > Security > API clients: `ifc-demo-uc06-ccaas` with its short entitlement list (compare with the admin client).
+- Users: `ifc-demo-uc06-marie`, her TOTP enrolment (and the registered device if you enrolled a phone).
+- Events / reports for the OTP and authenticator verifications (menu names vary by release; confirm in rehearsal).
 
-**Honest limitation:** Voice itself is simulated. Verify does not do voice biometrics.
+**If it breaks**
+- Bot says it could not send the code, or `CSIBN0075E` in the output: the mailbox address is on Verify's suppression list. Clear it with `node -e "require('./demo/lib/verify').api('DELETE','/v1.0/notification/suppression/email/YOUR%40ADDRESS')"` (204 = cleared). Never use `@example.com` for the mailbox.
+- `429 CSIBN0081E` on a code: too many wrong codes; wait about 20 s.
+- TOTP code rejected: each 30-second code works once. Wait for the next one.
+- Push never arrives: run `node demo/uc06-voice/enroll-phone.js --status`; if there are 0 registrations, scan the QR again. Fall back to the `totp` option.
+- Anything else: `node demo/uc06-voice/setup.js` then `node demo/uc06-voice/run.js`.
+
+**Honest limitation**
+- Voice itself is simulated (text). Verify does not do voice biometrics, speech or telephony.
+- **SMS and voice-call OTP are blocked on this tenant** (`CSIAP3545E`). The demo uses e-mail OTP. Say so; SMS is configuration plus quota, and a customer SMS gateway via the `external_sms` webhook purpose is unverified.
+- Push approval and passkey step-up are not proven until a phone / browser is used `[HUMAN]`. Do not promise passkey for this flow until UC-02 is done.
+- Billing, Client 360 and Policy-change APIs are stubs; Verify is not involved in them.
 
 ---
 

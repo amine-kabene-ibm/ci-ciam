@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-05. **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-10. **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -20,13 +20,15 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | How to build each demo, live-tested facts, blockers, IBM message, build order | [`DEMO-BUILD-GUIDE.md`](DEMO-BUILD-GUIDE.md) | Done |
 | How a human presents each demo on the UI, with readiness labels | [`DEMO-RUNBOOK-UI.md`](DEMO-RUNBOOK-UI.md) | Done |
 | Repo blocker fixes in `functions.js` | commit `688ecd2` | Done (see section 4) |
+| **Demo foundation**: `demo/lib/{verify,idempotent,totp}.js`, `demo/00-probe.js` (12 live checks), `demo/teardown-all.js` | `demo/` | Done, run on the tenant |
+| **UC-06 Voicebot**: `stubs/voicebot-ccaas/`, `demo/uc06-voice/` (setup, run, caller, enroll-phone, verify, teardown, README) | `demo/uc06-voice/` | **Built, PARTIAL.** E-mail OTP + TOTP step-up verified live (32/32, `demo/out/uc06.json`). Push and passkey step-up not proven: need a phone / browser `[HUMAN]` |
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**No demo has been built.** These do not exist yet: `demo/`, `stubs/`, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. They are only described in the build guide.
-No application code was added other than the `functions.js` fix. Nothing has been pushed unless the user did it. Check with `git status` and `git log origin/master..master`.
+**Built so far:** the foundation and **UC-06** (see section 2). **Everything else is still only described in the build guide:** the other 14 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
 
@@ -60,6 +62,12 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 10. **No phone is registered** (`GET /v1.0/authenticators` returns 0). The Verify Profile authenticator client id is `5280f51a-9699-4d96-9dd9-bcc0fdfdf9dd`.
 11. The Verify Bridge is not configured on the tenant (`GET /config/v1.0/onpremagents` returns 404 `CSIBS0035E`).
 
+12. **SMS and voice OTP are blocked** (`429 CSIAP3545E` / `CSIAP3546E` "not supported for this account"). E-mail OTP works. The earlier statement that the SMS config was usable was wrong. (UC-06, 2026-11-10)
+13. **TOTP API works fully** without a phone: enrol, verify (204), replay rejected, windows -1/0/+1, lockout 429 clearing in about 20 s, one enrolment per user. A script can play the authenticator app (`demo/lib/totp.js`).
+14. **Least-privilege API clients work:** `POST /v1.0/apiclients` (201, empty body; read the secret via GET). UC-06 uses a 5-entitlement client; out-of-scope calls return 403.
+15. **E-mail suppression list bites:** a bounce suppresses the address and OTPs then fail with `400 CSIBN0075E`. `example.com` addresses end up there. `GET`/`DELETE /v1.0/notification/suppression/email/{address}`.
+16. **Push to a phone is the one unproven UC-06 call.** Route and validation are live (404 for an unknown authenticator, 400 for a bad body); a real notification needs a registered IBM Verify app.
+
 ### API gotchas that cost time (put these in `demo/lib/verify.js`)
 - SCIM paths (`/v2.0/Users`, `/v2.0/Groups`) need `Content-Type` **and** `Accept: application/scim+json` (otherwise 406 `CSIAI0211E` / 415 `CSIAI0212E`).
 - Create test users with header `usershouldnotneedtoresetpassword: true`, otherwise logins fail with `CSIAQ0267E`.
@@ -71,6 +79,11 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 - axios responses expose `.status`, never `.statusCode`.
 - Token lifetime is about 2 hours (`client_credentials`). Rate limit is about 25 requests per second.
 - Name everything `ifc-demo-<uc>-<thing>` so one teardown script can find it.
+- `POST /v1.0/apiclients` and `POST /v1.0/sts/oauth/clients` return 201 with an **empty body**. List to find the new object.
+- E-mail OTP: the user types the digits **after** the `NNNN-` prefix (`CSIBN0018E` if the prefix is included). 5 attempts max (`CSIBN0080E` on the last).
+- `GET /v1.0/applications` list items give `_links.self.href` (`/appaccess/v1.0/applications/{id}`); DCR clients show up there and are deleted with `DELETE` on that href (200).
+- SCIM filters `sw` and `and` work. Access-policy `search` only supports `=`, `!=`, `contains` on strings (`sw` gives `CSIBI0015E`).
+- `demo/lib/verify.js` loads `.env` from the repo root by path, so demo scripts work from any cwd.
 
 ## 6. Verdicts (15 use cases)
 
@@ -84,10 +97,10 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 
 ## 7. Blockers and open questions
 
-**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection. Also ask IBM to confirm: multiple custom IdP domains, delegated admin per brand, an mTLS endpoint on SaaS, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
+**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06). Also ask IBM to confirm: multiple custom IdP domains, delegated admin per brand, an mTLS endpoint on SaaS, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
 
 **The human must do** (checklist in `DEMO-BUILD-GUIDE.md` section 3):
-- Install the IBM Verify app on 1–2 phones (UC-04, 06, 14).
+- Install the IBM Verify app on 1–2 phones (UC-04, 06, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
 - Set up a public tunnel (ngrok or cloudflared) for webhooks and back-channel logout (UC-05, 08, 13).
 - Run `mkcert -install` and add `127.0.0.1 ifc-demo.local` to `/etc/hosts` (UC-02).
 - Provide a readable test mailbox (UC-01, 03, 06, 14).
@@ -97,18 +110,28 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 
 ## 8. What to start building next
 
-**Recommended order** (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation and UC-06 are done.** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
-1. **Foundation:** `demo/lib/verify.js` (token cache, request wrapper, SCIM header handling, evidence logger), `demo/lib/idempotent.js` (`ensureUser`, `ensureGroup`, `ensureApp`, `ensurePolicy`), `demo/00-probe.js` (re-runs the live probes and prints a pass/fail table), `demo/teardown-all.js`, `demo/out/` (gitignored evidence).
-2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven).
-3. **UC-07, UC-06, UC-01 Track A, UC-03.**
-4. **UC-02, UC-08, UC-04** (need browser, phone or tunnel).
-5. **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
+1. **Close UC-06 (15 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. If it passes, UC-06 push moves from `[DOCS]` to `[LIVE]` and the guide must be updated. Then rehearse `node demo/uc06-voice/caller.js`.
+2. **UC-07 next**, because it reuses the UC-06 stub (`stubs/voicebot-ccaas`): add `/handoff` that introspects the app's token, skips the OTP for tier 1 and keeps step-up for tier 2. STS client creation is already proven.
+3. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03.
+4. **UC-02, UC-08, UC-04** (need browser, phone or tunnel), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
+5. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, now including SMS/voice OTP enablement).
 
-Per-use-case folders look like `demo/ucNN-*/` with `setup.js`, `run.js`, `verify.js`, `teardown.js` and a `README.md`. Small stubs go in `stubs/` (voicebot, client360, legacy auth store, rules engine, ops queue, risk engine, RPs). Each use case's build steps are in `DEMO-BUILD-GUIDE.md` section 2. Each one's presenter click path is in `DEMO-RUNBOOK-UI.md` section 2. **When a demo is built, update the readiness label in the runbook summary table.**
+Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `deleteUser`...), `demo/lib/totp.js`, `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients named `ifc-demo-*`; extend `inventory()` if a new object type appears). `demo/uc06-voice/common.js` has `nextTotpCode()` for scripted TOTP.
+Per-use-case folders look like `demo/ucNN-*/` with `setup.js`, `run.js`, `verify.js`, `teardown.js` and a `README.md`. **When a demo is built, update the readiness label in the runbook summary table.**
+
+### Commands
+```bash
+node ./bin/www &                       # base app on :3000 (only needed for the app-based demos)
+curl -X POST localhost:3000/setup      # must return 200
+node demo/00-probe.js                  # 12/12 expected
+node demo/teardown-all.js --list       # what ifc-demo-* objects exist
+node demo/uc06-voice/setup.js && node demo/uc06-voice/verify.js
+```
 
 ### Suggested first prompt for the next session
-> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md`. Run `npm install`, start the app and re-run `POST /setup`. Build the foundation (`demo/lib`, `00-probe.js`, `teardown-all.js`), then build UC-13 end to end with a script that writes evidence to `demo/out/`. Don't print `.env` values.
+> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2 and the UC-07 parts. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then build UC-07 end to end reusing `stubs/voicebot-ccaas` and `demo/lib`. Write evidence to `demo/out/uc07.json`. Don't print `.env` values.
 
 ## 9. Tooling that was used and may no longer exist (outside the repo)
 

@@ -45,6 +45,11 @@ Everything below is tagged by how I know it.
 | 18 | Sub-tenant API returns 405 `CSIAG0746E`: "This tenant does not have a partner reseller offering enabled". | **Resolves the open UC-10 question:** sub-tenants are a **reseller** feature, not a per-brand admin feature. Not available. |
 | 19 | The token endpoint for `grant_type=password` is not allowed on the default app client. DCR clients can enable it. | Use DCR clients for scripted user logins in tests. |
 | 20 | The `ifc` demo user created through SCIM with a password has "password must be changed" on first login unless header `usershouldnotneedtoresetpassword: true` is sent. | All scripted test users must send that header. |
+| 21 | `POST /v2.0/factors/smsotp/transient/verifications` returns 429 `CSIAP3545E` "SMS messages are not supported for this account"; voice OTP returns `CSIAP3546E`. E-mail OTP works. (Found while building UC-06, 2026-11-10.) | SMS and voice OTP cannot be demoed on this tenant. Use e-mail OTP + TOTP. Add "enable SMS" to the IBM message if needed. |
+| 22 | TOTP API works end to end: enrol (201), verify (204), replay rejected (400), windows -1/0/+1 accepted, lockout 429 that clears in about 20 s, one enrolment per user. (UC-06) | UC-02 TOTP fallback and UC-06 step-up are buildable without a phone. |
+| 23 | `POST /v1.0/apiclients` creates a least-privilege API client (201, **empty body**; read `clientId`/`clientSecret` via `GET /v1.0/apiclients/{id}`). Requests beyond its entitlements return 403 `CSIAK4300E`. (UC-06) | Third-party/CCaaS components can run on a client with 5 entitlements instead of the admin client. |
+| 24 | Email suppression list: a delivery failure suppresses the address; later OTPs to it return 400 `CSIBN0075E`. `GET`/`DELETE /v1.0/notification/suppression/email/{address}`. | Do not use fake `@example.com` mailboxes for OTP demos. |
+| 25 | `POST /v1.0/authenticators/initiation` with `Accept: image/png` returns the IBM Verify app registration QR. | UC-04 and UC-06 phone enrolment can be scripted up to the scan. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -72,7 +77,7 @@ After the fixes, running `POST /setup` completed with HTTP 200: it created the `
 
 ## 1. Common foundation (build once)
 
-### 1.1 Files to create (nothing is created yet; this is the plan to execute)
+### 1.1 Files (foundation built 2026-11-10: `lib/verify.js`, `lib/idempotent.js`, `lib/totp.js`, `00-probe.js`, `teardown-all.js`; `config/` not needed so far)
 
 ```
 demo/
@@ -103,7 +108,8 @@ stubs/                   small Express services (voicebot, client360, legacy sto
 ```bash
 node bin/www                      # app on :3000
 curl -X POST localhost:3000/setup # idempotent, already run once
-node demo/00-probe.js             # when built: prints the table in 0.1
+node demo/00-probe.js             # 12 live checks, prints PASS/FAIL (blocked features must stay blocked)
+node demo/teardown-all.js --list  # every ifc-demo-* object on the tenant (drop --list to delete)
 ```
 
 ---
@@ -227,19 +233,32 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-06: Voicebot (CCaaS) information query and transactions
 
-**Status:** Bob can build it entirely, except approval on a phone for the push step.
+**Status: BUILT, PARTIAL.** Built and verified end to end against the tenant with e-mail OTP and authenticator-app (TOTP) step-up (32/32 scripted checks, `demo/out/uc06.json`). **Push approval and passkey step-up are not proven**: they need a phone / browser `[HUMAN]`. Details and exact commands: `demo/uc06-voice/README.md`.
 
-**Build steps**
-1. `stubs/voicebot-ccaas/server.js` (port 4030) with `/identify`, `/challenge`, `/verify`, `/transaction`.
-2. `/identify`: SCIM lookup `GET /v2.0/Users?filter=…` `[LIVE]`.
-3. `/challenge`: email OTP transient verification `POST /v2.0/factors/emailotp/transient/verifications` (SMS config is enabled with default quota unknown `[LIVE]`: `charset/length/expiry/retries` returned).
-4. `/verify`: attempt endpoint with the OTP.
-5. Step-up for sensitive actions: push via `POST /v1.0/authenticators/{id}/verifications` (needs a registered phone) or passkey assertion.
-6. `demo/uc06-voice/caller.js`: an interactive CLI "caller" that talks to the stub and prints a transcript.
+**Built**
+- `stubs/voicebot-ccaas/server.js` (+ `backends.js`): `/call /identify /challenge /verify /stepup /stepup/verify /stepup/status /transaction /transcript`, plus mock Billing, Client 360 and Policy-change APIs. Started in-process by `run.js` / `caller.js` (port 4030 if run alone).
+- `demo/uc06-voice/`: `setup.js`, `run.js`, `caller.js`, `enroll-phone.js`, `verify.js`, `teardown.js`, `README.md`.
+- Tenant objects: user `ifc-demo-uc06-marie`, her TOTP enrolment, API client `ifc-demo-uc06-ccaas` (5 entitlements; the admin client has 165).
 
-**Human steps:** `[HUMAN]` read the OTP from the inbox/phone; approve the push on the phone.
+**Proven `[LIVE]`**
+- OTP generate: `POST /v2.0/factors/emailotp/transient/verifications` with `{correlation, emailAddress}` returns 201 (`id`, `expiry` 5 min, `retries: 4`) and a real e-mail is sent.
+- OTP validate: `POST .../verifications/{id}` with `{otp}` returns 204 on success. The user types only the digits **after** the `NNNN-` prefix (typing the prefix gives `CSIBN0018E`). Wrong code `CSIBN0021E`; the 5th wrong attempt returns `CSIBN0080E` and the transaction is `FAILED`; a later attempt returns `CSIBN0025E`.
+- "Code from the in-app generator": `POST /v2.0/factors/totp` `{userId, accountName, enabled}` (201, `attributes.secret` returned once), verify with `POST /v2.0/factors/totp/{id}` `{otp}` (204). One enrolment per user (`409 CSIBN0019E`). A used code is rejected (replay), windows -1/0/+1 are accepted, repeated wrong codes give `429 CSIBN0081E` and clear by themselves in about 20 s.
+- SCIM lookup, risk tiering (sensitive request refused without step-up, one step-up approves one action), lockout hand-over, and a least-privilege CCaaS API client.
+- Least-privilege entitlements, measured with 403 probes: `readUsers` (SCIM lookup), `authnAnyUser` (create/attempt OTP), `readEnrollMFAMethodAnyUser` (list TOTP and push enrolments). `readAuthenticatorsAnyUser` + `mfaPush` are added for push `[INFER]`.
+- Phone registration QR: `POST /v1.0/authenticators/initiation {owner, clientId, accountName}` with `Accept: image/png` returns a 300x300 PNG.
 
-**Verification:** transcript saved to `demo/out/uc06.json`, including Verify transaction ids.
+**Not proven**
+- Push: `POST /v1.0/authenticators/{id}/verifications` body `{transactionData{message,originIpAddress,originUserAgent}, pushNotification{title,message,send}, authenticationMethods[{id: <signature enrolment id>, methodType:"signature"}], logic:"OR", expiresIn}`, then poll `GET .../verifications/{txnId}` until `state` is `VERIFY_SUCCESS` (other states: `PENDING TIMEOUT CANCELED USER_DENIED USER_FRAUDULENT BIOMETRY_FAILED VERIFY_FAILED`) `[DOCS]`. A fake authenticator id gives 404 `CSIBH0018E` and a malformed body gives 400, so the route is live; a notification was never sent `[HUMAN]`.
+- Passkey step-up `[HUMAN]` (browser + HTTPS origin, see UC-02). The stub returns `501 passkey_not_built`.
+
+**Blocked on this tenant `[LIVE]`**
+- **SMS OTP:** `429 CSIAP3545E "SMS messages are not supported for this account"`. **Voice OTP:** `429 CSIAP3546E`. The earlier note in this guide that SMS "is enabled" was wrong; only e-mail OTP works. IFC's text says "OTP or TOTP to the user's device"; the demo uses e-mail OTP and TOTP. Ask IBM to enable SMS if IFC insists on SMS (add to the IBM message).
+- `POST /v2.0/factors/otp` (generic OTP, used by IBM's chat-bot sample) returns `501 CSIBN0011E` (feature disabled). The chat-bot sample's `/v1.0/authnmethods/{method}/transient/verification` path returns 404; the working paths are the `/v2.0/factors/...` ones above.
+
+**Human steps `[HUMAN]`:** install IBM Verify; `node demo/uc06-voice/enroll-phone.js` and scan; `node demo/uc06-voice/run.js --push` and approve; `node demo/uc06-voice/caller.js` and read the e-mail OTP from the mailbox.
+
+**Risks:** the e-mail suppression list. A bounce suppresses the address and every later OTP to it fails with `400 CSIBN0075E` (this happened to `example.com` test addresses). Check `GET /v1.0/notification/suppression/email/{address}` (200 = suppressed), clear with `DELETE` on the same path (204).
 
 ---
 
@@ -402,7 +421,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | # | Action | Unblocks | Effort |
 |---|---|---|---|
 | 1 | **Email IBM now** (template in section 4). | UC-01 Track B, UC-05, UC-10, UC-11 | 10 min to send, days to get answers |
-| 2 | Install **IBM Verify** app on 1-2 phones. | UC-04, UC-06, UC-14 push | 10 min |
+| 2 | Install **IBM Verify** app on 1-2 phones. For UC-06: `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push`. | UC-04, UC-06, UC-14 push | 10 min |
 | 3 | Create a **public tunnel** (ngrok/cloudflared) for webhooks and back-channel logout. | UC-05, UC-08, UC-13 | 15 min |
 | 4 | `mkcert -install`, add `127.0.0.1 ifc-demo.local` to `/etc/hosts`. | UC-02 | 15 min |
 | 5 | Provide a test mailbox you can read (or several aliases). | UC-01, UC-03, UC-06, UC-14 | 5 min |
@@ -415,14 +434,15 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 > 1. Flow designer (API reports "not subscribed: CI-49771") and User forms.
 > 2. Branding/themes (trial returns CSIAZ3060E).
 > 3. Adaptive access (Trusteer) and activate Threat detection (config is `inactive`).
+> 4. SMS and voice OTP delivery (API returns CSIAP3545E / CSIAP3546E "not supported for this account"); confirm quota and whether a customer SMS gateway can be attached (`external_sms` webhook).
 >
 > Please also confirm: (a) multiple custom IdP domains on one tenant; (b) delegated admin scoped to a subset of users/apps; (c) mTLS client authentication endpoint on SaaS; (d) supported password-hash prefixes for CSV import and the recommended JIT migration pattern; (e) whether one user can register more than one IBM Verify authenticator; (f) a prior financial-services migration reference; (g) the external-callout (HTTP) capability in attribute functions on a paid tenant.
 
 ## 5. Recommended build order (updated by live findings)
 
-1. **Foundation** (`demo/lib`, `00-probe.js`).
+1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
 2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven).
-3. **UC-07, UC-06, UC-01 Track A, UC-03**.
+3. **UC-07, UC-06 (built, push pending a phone), UC-01 Track A, UC-03**.
 4. **UC-02, UC-08, UC-04** (need browser/phone/tunnel).
 5. **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
 
@@ -433,5 +453,6 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `functions.js` | `getPolicyId` and `createMfaPolicy` now use `/v5.0/policyvault/accesspolicy`, the v5 rule schema (`meta`, array conditions, string `action`), and a quoted `search=name="…"` | v3.0 API is gone; `/setup` crashed |
 | `functions.js` | `response.statusCode` → `response.status` (4 places) | axios exposes `.status` only |
 | `.env` | No change by me (B3 was already fixed) | |
+| `demo/lib/*`, `demo/00-probe.js`, `demo/teardown-all.js` | New foundation (token cache, SCIM headers, evidence, idempotent helpers, TOTP, probe table, tenant sweep) | Section 1 |
+| `stubs/voicebot-ccaas/`, `demo/uc06-voice/` | New: UC-06 | Section 2, UC-06 |
 
-Not yet committed to git.
