@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-10 (UC-08 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-10 (UC-09 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -24,13 +24,14 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | **UC-06 Voicebot**: `stubs/voicebot-ccaas/`, `demo/uc06-voice/` (setup, run, caller, enroll-phone, verify, teardown, README) | `demo/uc06-voice/` | **Built, PARTIAL.** E-mail OTP + TOTP step-up verified live (32/32, `demo/out/uc06.json`). Push and passkey step-up not proven: need a phone / browser `[HUMAN]` |
 | **UC-07 App-to-voice handoff**: `demo/uc07-handoff/` (setup, run, serve, voice, verify, teardown, README), `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `/handoff` in `stubs/voicebot-ccaas` | `demo/uc07-handoff/` | **Built, PARTIAL.** Verify side proven live: 48/48 scenarios (`demo/out/uc07.json`), `verify.js` 21 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser login to the app (2FA policy), push, passkey `[HUMAN]` |
 | **UC-08 SSO and global logout**: `demo/uc08-sso/` (setup, run, serve, verify, teardown, README, browser), `stubs/rp-sso/` | `demo/uc08-sso/` | **Built, PARTIAL.** Verified live: 37/37 scenarios (`demo/out/uc08.json`), `verify.js` 14 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser, back-channel delivery (tunnel), idle/absolute timeouts (no API) `[HUMAN]` |
+| **UC-09 API security**: `demo/uc09-api/` (common, jwt, setup, serve, run, verify, teardown, README), `stubs/ifc-api/` | `demo/uc09-api/` | **Built and VERIFIED.** 25/25 live checks (`demo/out/uc09.json`), `verify.js` PASS, rebuilt from zero after teardown. `private_key_jwt` + DPoP + key rotation + RFC 8693 on-behalf-of (scoped, policyholder-only) proven `[LIVE]`. **mTLS not possible on this tenant** (no client-certificate request in the TLS handshake `[LIVE]`). No `act` claim; `actorCriteria` not enforced `[LIVE]` |
 
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation, **UC-06**, **UC-07** and **UC-08** (see section 2). **Everything else is still only described in the build guide:** the other 12 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08** and **UC-09** (see section 2). **Everything else is still only described in the build guide:** the other 11 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -57,7 +58,7 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 2. **Branding is NOT supported on the trial** (403 `CSIAZ3060E`). The app's custom theme can't be registered, so `/setup` falls back to the default theme. It blocks UC-10 themes and FR/EN.
 3. **Sub-tenants are reseller-only** (405 `CSIAG0746E`), so per-brand tenants are not available.
 4. **Threat detection config exists but is `inactive`.** Adaptive access (Trusteer) is not confirmed. UC-05 depends on IBM enabling both.
-5. **Dynamic client registration works** (`POST /oauth2/register`, `DELETE /oauth2/register/{id}`). `private_key_jwt` with an inline `jwks` was proven end to end (assertion `aud` = `https://trialverify.verify.ibm.com/oauth2/token`). `tls_client_auth` registers, but the **mTLS handshake is untested**.
+5. **Dynamic client registration works** (`POST /oauth2/register`, `DELETE /oauth2/register/{id}`). `private_key_jwt` with an inline `jwks` was proven end to end (assertion `aud` = `https://trialverify.verify.ibm.com/oauth2/token`). `tls_client_auth` registers, but **mTLS does not work on this host**: the TLS handshake sends no `CertificateRequest`, so no client certificate can be presented (UC-09, 2026-11-10, `[LIVE]`).
 6. **CIBA works** if the app is created with `"applicationState": true` (otherwise `invalid_client`).
 7. **Immediate revocation proven (UC-13):** SCIM `PATCH active=false` gives 204. The existing token introspects `active:false` within 0 s, and a new login returns `CSIAQ0281E`.
 8. **Webhook purposes available:** `identity_proofing`, `external_mfa`, `external_risk`, `notifications`, `external_sms`. `external_risk` is the way to feed IFC's own risk signals into a policy (UC-05). `external_sms` supports the bring-your-own-SMS-gateway ask (UC-02).
@@ -110,7 +111,7 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 
 ## 7. Blockers and open questions
 
-**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06). Also ask IBM to confirm: multiple custom IdP domains, delegated admin per brand, an mTLS endpoint on SaaS, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
+**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06), and **a client-certificate (mTLS) option on the SaaS edge** (new, from UC-09: without it mTLS client authentication cannot be demonstrated on this tenant). Also ask IBM to confirm: multiple custom IdP domains, delegated admin per brand, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
 
 **The human must do** (checklist in `DEMO-BUILD-GUIDE.md` section 3):
 - Install the IBM Verify app on 1–2 phones (UC-04, 06, 07, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
@@ -122,14 +123,14 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 - Provide a readable test mailbox (UC-01, 03, 06, 14).
 - Decide whether Podman may pull the OpenFGA and Verify Bridge images (UC-11, 12). Podman is at `/opt/podman/bin/podman`. Docker is not installed. Node is v24.7.0. Go is not installed.
 
-**Unconfirmed (don't promise until tested):** the mTLS handshake; two IBM Verify authenticators for one user; `client360_id` appearing in the ID token via claim mapping; the passkey method URN in policies; attaching an external SMS webhook; which hash prefixes CSV import supports (doc shows `{SSHA256}`); `X-Forwarded-For` being honoured at the SaaS edge.
+**Unconfirmed (don't promise until tested):** whether IBM can enable a client-certificate (mTLS) option (today the handshake sends no `CertificateRequest`); two IBM Verify authenticators for one user; `client360_id` appearing in the ID token via claim mapping; the passkey method URN in policies; attaching an external SMS webhook; which hash prefixes CSV import supports (doc shows `{SSHA256}`); `X-Forwarded-For` being honoured at the SaaS edge.
 
 ## 8. What to start building next
 
-**Foundation, UC-06, UC-07 and UC-08 are done (UC-08 browser/back-channel pending a human).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-06, UC-07, UC-08 and UC-09 are done (UC-06, UC-07 and UC-08 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
 1. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
-2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 must not assert an `act` claim**: the exchanged token has none (finding 20). UC-09 can reuse `ensureStsClient` and `oauthClient().exchange` from `demo/lib`.
+2. **UC-13, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 is built and verified**: do not assert an `act` claim (the exchanged token has none, finding 20) and do not claim mTLS (finding 6). UC-09 reuses `ensureStsClient`, `ensureDcrClient` and `oauthClient().exchange` from `demo/lib`.
 3. **UC-02, UC-04** (need browser or phone), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
 4. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
@@ -145,6 +146,8 @@ node demo/teardown-all.js --list       # what ifc-demo-* objects exist
 node demo/uc06-voice/setup.js && node demo/uc06-voice/verify.js
 node demo/uc07-handoff/setup.js && node demo/uc07-handoff/run.js && node demo/uc07-handoff/verify.js
 node demo/uc08-sso/setup.js && node demo/uc08-sso/verify.js     # then: node demo/uc08-sso/serve.js for the browser demo
+node demo/uc09-api/setup.js && node demo/uc09-api/serve.js &    # then, in another shell: node demo/uc09-api/run.js && node demo/uc09-api/verify.js
+node demo/uc09-api/teardown.js                                  # removes all ifc-demo-uc09-* objects
 ```
 
 ### Suggested first prompt for the next session

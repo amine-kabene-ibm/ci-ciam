@@ -134,7 +134,7 @@ async function findStsClient(clientName) {
   return (r.data.clients || []).find((c) => c.clientName === clientName) || null;
 }
 
-async function ensureStsClient(clientName, { secret, accessTokenLifetime }) {
+async function ensureStsClient(clientName, { secret, accessTokenLifetime, actorRequired = false }) {
   if (!clientName.startsWith(PREFIX)) throw new Error(`sts client name must start with ${PREFIX}`);
   const tokenType = 'urn:ietf:params:oauth:token-type:access_token';
   let existing = await findStsClient(clientName);
@@ -142,16 +142,21 @@ async function ensureStsClient(clientName, { secret, accessTokenLifetime }) {
   if (existing) {
     const g = await api('GET', `/v1.0/sts/oauth/clients/${existing.clientId}`);
     const ok = g.status === 200 && g.data.enabled && g.data.clientAuthentication.clientSecret === secret
-      && g.data.tokenSettings.accessTokenLifetime === accessTokenLifetime;
+      && g.data.tokenSettings.accessTokenLifetime === accessTokenLifetime
+      && !!(g.data.tokenExchangeSettings || {}).actorTokenRequired === actorRequired;
     if (!ok) { await api('DELETE', `/v1.0/sts/oauth/clients/${existing.clientId}`); existing = null; }
   }
   if (!existing) {
+    // actorRequired (UC-09 on-behalf-of): the exchange must carry an actor_token. [LIVE] CSIAQ5242E without one.
     const c = await api('POST', '/v1.0/sts/oauth/clients', {
       body: {
         clientName, enabled: true,
         clientAuthentication: { clientAuthMethod: 'client_secret_basic', clientSecret: secret },
         tokenSettings: { signingAlg: 'RS256', accessTokenLifetime },
-        tokenExchangeSettings: { subjectTokenTypes: [tokenType], requestedTokenTypes: [tokenType] },
+        tokenExchangeSettings: {
+          subjectTokenTypes: [tokenType], requestedTokenTypes: [tokenType],
+          ...(actorRequired ? { actorTokenTypes: [tokenType], actorTokenRequired: true } : {}),
+        },
       },
     });
     if (c.status !== 201) throw new Error(`create sts client ${clientName}: HTTP ${c.status} cid=${c.cid}`);

@@ -30,7 +30,7 @@ Everything below is tagged by how I know it.
 | 3 | **Branding is NOT enabled on the trial.** `POST /v1.0/branding/themes` returns 403 `CSIAZ3060E`: "Trial subscriptions do not support the branding feature." | The demo app's custom theme cannot be registered. The app runs with the `default` theme. **This also blocks UC-10 (per-brand themes and FR/EN) until IBM enables branding.** |
 | 4 | Dynamic client registration `POST /oauth2/register` works (201) and `DELETE /oauth2/register/{id}` works (204). | UC-15 dynamic client demo is buildable. Also the quickest way to create test clients. |
 | 5 | `private_key_jwt` client registered via DCR with a JWKS; a signed client assertion with `aud = <tenant>/oauth2/token` returned a token. | UC-09 `private_key_jwt` is proven end to end. |
-| 6 | `tls_client_auth` client with certificate-bound access tokens registers fine (201). **The actual mTLS handshake is NOT tested.** | UC-09 mTLS still needs a handshake test (section UC-09). |
+| 6 | `tls_client_auth` client with certificate-bound access tokens registers fine (201). **The mTLS handshake was tested (UC-09, 2026-11-10): the edge sends no `CertificateRequest`, so no client certificate can be presented on this host [LIVE].** A `curl --cert` to the token endpoint returns 401 `CSIAQ0155E` for a dummy client, which is not a valid mTLS proof. | UC-09 does **not** claim mTLS. It uses `private_key_jwt` and DPoP. Only an IBM-side change (client-certificate edge option) could enable mTLS. |
 | 7 | CIBA app created via `POST /v1.0/applications` with `grantTypes.ciba=true` and backchannel settings (poll, email). **You must set `"applicationState": true`**, otherwise `/oauth2/ciba` returns `invalid_client`. With it enabled, `/oauth2/ciba` is reachable and returned `unknown_user_id` for a fake user. | UC-14 is buildable. The approval step needs a human (email link or phone). |
 | 8 | SCIM `PATCH active=false` returns 204. A token issued earlier then introspects `active:false` **within the same second** and a new token request returns `CSIAQ0281E The account is not active.` | **UC-13 core claim is proven:** deactivation immediately kills existing access tokens and blocks new logins. |
 | 9 | `DELETE /v1.0/auth/sessions/{userId}` returns 204. `GET` on sessions with no session returns `{}`. | Session revoke API works. A real browser session is needed to see it killed (human step). |
@@ -50,11 +50,12 @@ Everything below is tagged by how I know it.
 | 23 | `POST /v1.0/apiclients` creates a least-privilege API client (201, **empty body**; read `clientId`/`clientSecret` via `GET /v1.0/apiclients/{id}`). Requests beyond its entitlements return 403 `CSIAK4300E`. (UC-06) | Third-party/CCaaS components can run on a client with 5 entitlements instead of the admin client. |
 | 24 | Email suppression list: a delivery failure suppresses the address; later OTPs to it return 400 `CSIBN0075E`. `GET`/`DELETE /v1.0/notification/suppression/email/{address}`. | Do not use fake `@example.com` mailboxes for OTP demos. |
 | 25 | `POST /v1.0/authenticators/initiation` with `Accept: image/png` returns the IBM Verify app registration QR. | UC-04 and UC-06 phone enrolment can be scripted up to the scan. |
-| 26 | Token exchange and introspection work (UC-07, 2026-11-10): `POST /oauth2/introspect` with an STS client (HTTP Basic) returns `active`, `sub`, `amr`, `exp`, `client_id`, `grant_type`; `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` returns a token of `tokenSettings.accessTokenLifetime`. `audience` is ignored, no `act` claim, the exchanged token survives revocation of the original but not user deactivation. Access tokens are opaque (no offline validation). | UC-07 is built on this. UC-09 token exchange / on-behalf-of reuses it: the `audience` and `act` expectations in the plan are wrong. |
+| 26 | Token exchange and introspection work (UC-07, 2026-11-10): `POST /oauth2/introspect` with an STS client (HTTP Basic) returns `active`, `sub`, `amr`, `exp`, `client_id`, `grant_type`; `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` returns a token of `tokenSettings.accessTokenLifetime`. `audience` is ignored, no `act` claim, the exchanged token survives revocation of the original but not user deactivation. Access tokens are opaque (no offline validation). | UC-07 is built on this. UC-09 token exchange / on-behalf-of reuses it: the `audience` and `act` expectations in the plan are wrong. **Confirmed again in UC-09 (2026-11-10).** |
 | 27 | SSO and logout (UC-08, 2026-11-10): discovery advertises `frontchannel_logout_supported`, `backchannel_logout_supported`, `end_session_endpoint` = `/v1.0/endpoint/default/rplogout`. DCR takes `frontchannel_logout_uri` / `backchannel_logout_uri` (+ `_session_required`, `post_logout_redirect_uris`); if both are sent, front-channel wins and the back-channel URI is silently dropped. `PUT` on the application (full GET document) changes `logoutOption`, `accessTokenExpiry`, `authPolicy`. | UC-08 is built on this. |
 | 28 | Cross-app SSO (UC-08): the 2nd/3rd app's `/authorize` returns a code with no page; all apps share one `sid`; one entry in `GET /v1.0/auth/sessions/{userId}`. `ACTION_MFA_ALWAYS` on a later app re-asks only TOTP; `ACTION_MFA_PER_SESSION` does not re-ask. Policy group conditions compare to the token's `groupIds`, which holds group **names**, not SCIM ids. A TOTP enrolment must be validated once (`POST /v2.0/factors/totp/{id}` `{otp}` = 204) before login can use it. | Per-persona/per-app assurance without a session-policy object. |
 | 29 | Global logout (UC-08): `rplogout?id_token_hint&post_logout_redirect_uri&state` returns an HTML page with one iframe per app (`<rp>/frontchannel-logout?iss&sid`) plus the tenant's own, then auto-submits a status form after 3 s and redirects. **The Verify session is only cleared when that page runs.** Afterwards: sessions `{}`, access token `active:false` at once, refresh `invalid_grant`. `DELETE /v1.0/auth/sessions/{userId}` = 204 and kills tokens at once, but an app trusting its own cookie stays signed in. | Front-channel needs the browser to stay open about 3 s; back-channel is the answer for admin kills. |
 | 30 | ID token carries `acr`, `amr`, `auth_time`, `sid`, `sub`, `iss`, `groupIds`. **Correction to finding 19/UC-07:** only *introspection* lacks `auth_time`/`acr`; the ID token and userinfo have them. `state`/`nonce` need 8+ chars. No session-policy API exists (every candidate path answers with the console login page). | Idle/absolute timeouts cannot be scripted; use per-app `accessTokenExpiry`. |
+| 31 | On-behalf-of scope (UC-09, 2026-11-10): an exchange **without** `scope` returns a token with no scope (the policyholder's `openid` is not carried). An exchange **with** `scope=ifc.policy.read` returns a token carrying exactly that scope. The exchanged token keeps `sub` = policyholder and `client_id` = the partner STS client. Without an actor token the exchange returns 400 CSIAQ5242E. `actorCriteria` (CEL) is stored as `{}` and not enforced: a disallowed actor still gets a token. | UC-09 requests the scope on the exchange and checks the policyholder rule in the API stub. `actorCriteria` is not a control: the API scope and policyholder check are. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -335,19 +336,27 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-09: API security
 
-**Status:** Bob builds all of it. mTLS handshake is the one unknown.
+**Status: BUILT and VERIFIED (2026-11-10).** 25/25 live checks pass (`demo/uc09-api/run.js`), verified by `demo/uc09-api/verify.js`, torn down and rebuilt from zero. mTLS client authentication is **NOT possible** on this tenant host: the handshake sends no `CertificateRequest` `[LIVE]`. The demo uses `private_key_jwt` and DPoP instead.
 
-**Proven `[LIVE]`:** DCR with `private_key_jwt` + inline `jwks`, then `client_credentials` with a client assertion whose `aud` is `https://trialverify.verify.ibm.com/oauth2/token`: **token issued**. DCR with `tls_client_auth` + `tls_client_certificate_bound_access_tokens:true` registered.
+**Proven `[LIVE]`:**
+- `private_key_jwt` machine client: client assertion (`aud` = `<tenant>/oauth2/token`) gets a bearer token; the API accepts it (200). Wrong key → 401 `invalid_client` (CSIAQ5064E).
+- Scope comes from the client registration, not from the request (a scope not registered is not granted; the API returns 403 `insufficient_scope`).
+- An unlisted, registered machine client gets a Verify token, and the API refuses it (403).
+- DPoP-bound tokens: a bearer replay without a proof → 401; a proof from another key → 401 (`key_not_bound_to_token`).
+- Key rotation with zero downtime: JWKS holds old and new keys (both 200); after the old key is removed it is refused (401), the new one still works.
+- On-behalf-of: the policyholder's token is exchanged (RFC 8693) with a partner actor token, requesting `scope=ifc.policy.read`. The exchanged token has `sub` = policyholder and `client_id` = the partner STS client. The API accepts it for the policyholder's own policy (200) and refuses another policyholder's policy (403).
+- Exchange without an actor token → 400 CSIAQ5242E (`actorTokenRequired=true`).
+- TLS handshake to the tenant: no `CertificateRequest` (check J).
 
-**Build steps**
-1. `demo/uc09-api/keys.sh`: `openssl genrsa` + JWKS builder (the exact script worked).
-2. `setup.js`: DCR clients: `ifc-demo-m2m-pkjwt`, `ifc-demo-m2m-mtls`, plus an STS client `ifc-demo-partner` with `actorCriteria` (CEL) restricting actors.
-3. `run.js`: sign assertion, get token, call `stubs/ifc-api` which introspects (`POST /oauth2/introspect`) and enforces scopes; show a wrong-key rejection.
-4. Key rotation: `POST /v2.0/clients/{id}/secrets` `[DOCS]` for secret clients; for `private_key_jwt`, add a second key to `jwks` (update client via `PUT /oauth2/register/{id}`), prove both keys work, remove the old one.
-5. On-behalf-of: policyholder token as `subject_token`, partner token as `actor_token`. **UC-07 found `[LIVE]` that the exchanged token carries no `act` claim in its introspection response** (and `actorTokenRequired` makes the actor mandatory); do not assert `act` until the JWT variant of the exchanged token is decoded or `actorCriteria` is tested. The exchanged token had three parts but an opaque payload.
-6. mTLS handshake test: call `POST /oauth2/token` with `curl --cert c.pem --key k.pem`. `[INFER]` the SaaS edge may not request client certs on the main host; if the handshake fails or ignores the cert, **do not claim mTLS**; fall back to DPoP using `verify-saas-resources/apps/oauth/dpop`.
+**Not proven / limits `[LIVE]`:**
+- **No `act` claim.** The exchanged token is opaque; introspection does not return the actor. The demo does not claim the partner is recorded as actor. Control = the requested scope plus the policyholder check.
+- **`actorCriteria` (CEL) is not enforced.** It is stored as `{}`; an actor the policy would disallow still gets a token. The demo does not claim a partner allow-list on the exchange.
+- **mTLS client auth is not possible** on this host (see Status). Not demonstrated.
+- The protected API is a local stub (`stubs/ifc-api`) standing in for IFC's gateway.
 
-**Human steps:** none unless mTLS needs an IBM-provided mTLS hostname `[HUMAN]` (ask IBM).
+**Build (as built):** `demo/uc09-api/common.js` (names, constants), `jwt.js` (RS256 client assertion and DPoP), `setup.js` (idempotent: DCR clients `ifc-demo-uc09-m2m-pkjwt`, `-m2m-dpop`, `-m2m-rogue`; STS client `ifc-demo-uc09-partner` with `actorTokenRequired=true`; policyholder user and password-grant app), `serve.js` (stub on 127.0.0.1:4040), `run.js` (scenarios A–J), `verify.js` (reads evidence, secret scan, limits), `teardown.js`, `README.md`. Stub: `stubs/ifc-api/server.js`.
+
+**Human steps:** none for the API flows (terminal only). IBM-side question only if IFC requires mTLS: ask IBM whether the tenant can enable a client-certificate edge option `[HUMAN]`. Until then mTLS is not demonstrated.
 
 ---
 
@@ -481,7 +490,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 ## 5. Recommended build order (updated by live findings)
 
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
-2. **UC-13, UC-09, UC-14, UC-15** (proven or nearly proven).
+2. **UC-13, UC-14, UC-15** (proven or nearly proven). **UC-09 built and verified** (25/25 live; mTLS not possible on this host).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
 4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
 5. **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
@@ -499,3 +508,4 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `app.js` (1 require + 1 mount), `views/layout.hbs` (Help link) | UC-07: the "Speak with a Voicebot" button in the demo app | Section 2, UC-07 |
 | `demo/lib/verify.js` (`oauthClient`, `send` with DNS retry), `demo/lib/idempotent.js` (TOTP, STS, DCR helpers), `demo/lib/totp.js` (`totpPlayer`), `demo/uc06-voice/{common,setup}.js` | Shared helpers extracted for UC-07; UC-06 behaviour unchanged (32/32) | Section 1 |
 | `stubs/rp-sso/`, `demo/uc08-sso/`, `demo/lib/idempotent.js` (4 helpers added) | UC-08: three RP stubs, scripted browser, scenarios, verify/teardown | Section 2, UC-08 |
+| `stubs/ifc-api/`, `demo/uc09-api/`, `demo/lib/idempotent.js` (`ensureStsClient` takes `actorRequired`) | UC-09: protected policy API stub (scope, allow-list, DPoP, policyholder rule for delegated tokens), `private_key_jwt` + DPoP machine clients, RFC 8693 on-behalf-of, key rotation, verify/teardown | Section 2, UC-09 |

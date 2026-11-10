@@ -34,7 +34,7 @@
 | 06 | Voicebot | **READY NOW** for e-mail OTP + authenticator-code step-up (scripted 32/32 `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) and passkey | Terminal "caller", admin console, mailbox | Voice is simulated; SMS/voice OTP blocked on this tenant (e-mail OTP used); push and passkey step-up not yet proven |
 | 07 | App-to-voice handoff | **READY NOW** for the scripted app (terminal, 48/48 `[LIVE]`) / NEEDS HUMAN SETUP for the browser login to the real demo app, push and passkey | Terminal "app + caller", demo app Help page, admin console | Voice and the CCaaS are simulated; browser path and push not yet executed; IFC's own flow text still says "enter the OTP" (confirm) |
 | 08 | SSO and global logout | **READY NOW** for the scripted terminal path (37/37 `[LIVE]`) / NEEDS HUMAN SETUP for the real browser and back-channel (tunnel) | Browser with 3 stub apps on :4001-4003, terminal, admin console | Idle/absolute session policy has no API (confirmed); admin session kill leaves an app that trusts its own cookie signed in; back-channel delivery not yet executed |
-| 09 | API security | NEEDS BUILD (scripts proven) | Terminal + admin console | mTLS handshake not proven; do not claim it until tested |
+| 09 | API security | **READY NOW** for the scripted terminal path (25/25 `[LIVE]`, `verify.js` PASS) / admin console is a short look | Terminal (`run.js`), admin console (applications, auth methods) | No `act` claim on the exchanged token; `actorCriteria` not enforced; mTLS not demonstrated: the tenant TLS edge does not request a client certificate (no `CertificateRequest` in the handshake, TLS 1.2 and 1.3 `[LIVE]`), so the demo uses `private_key_jwt` and DPoP |
 | 10 | Per-brand login | NEEDS IBM (branding blocked on trial) | Two apps, login page | No sub-tenants (reseller only); themes blocked; delegated admin unconfirmed |
 | 11 | Legacy migration | NEEDS BUILD (bulk) / NEEDS IBM (JIT) | Terminal, login page, admin console | JIT needs Flow designer or Bridge |
 | 12 | ReBAC | NEEDS BUILD | Gateway stub UI/terminal | Not a Verify-native feature: Verify + OpenFGA |
@@ -370,20 +370,21 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-09: API security
 
-**Readiness:** NEEDS BUILD. The underlying calls were proven `[LIVE]` (private_key_jwt token issued).
+**Readiness:** READY NOW for the terminal path (`node demo/uc09-api/run.js`, 25/25 `[LIVE]`, verified by `verify.js`). The admin-console part is a short look at the clients, not a build step.
 
-**Prerequisites:** `demo/uc09-api/` keys, clients, and `stubs/ifc-api`.
+**Prerequisites:** `node demo/uc09-api/setup.js`, then `node demo/uc09-api/serve.js` in one terminal (leave it running). Run the demo in a second terminal with `node demo/uc09-api/run.js`.
 
 **Click path**
-1. Terminal: `run.js`. Show the signed client assertion, the token request, and the token.
-2. Call the stub API with the token: 200. Call with a token from a wrong key: 401.
-3. Key rotation: add a second key to the client, show both work, remove the first, show the old key is rejected.
-4. On-behalf-of: partner token + policyholder token → exchanged token with an `act` claim.
-5. Admin console → Applications / API clients: show the clients and auth methods.
+1. Terminal: `run.js` scenario A. Show the signed client assertion (private_key_jwt), the token request, and the bearer token: 200. The API accepts it.
+2. Scenario B: a token request signed with a wrong key is refused (401 `invalid_client`). Scenario C: the client asks for a scope it was not registered for; the token carries none, and the API returns 403.
+3. Scenario D: an unlisted machine client gets a token from Verify, but the IFC API refuses it (403). Scenario E: a DPoP-bound token replayed without its proof is refused (401).
+4. Scenario F: key rotation. The JWKS holds both keys (both work), then the old key is removed and is refused. No downtime.
+5. Scenario G, on-behalf-of: the policyholder signs in; the partner exchanges that token for a delegated token scoped to `ifc.policy.read`. The API accepts it for that policyholder's own policy (200) and refuses another policyholder's policy (403).
+6. Admin console → Applications / API clients: show the machine clients and their auth methods (`private_key_jwt`).
 
-**Talk track:** "Machine clients authenticate with keys, not shared secrets. Rotation is zero-downtime. Partners act on behalf of a policyholder with a delegated token."
+**Talk track:** "Machine clients authenticate with keys, not shared secrets. Scope comes from registration, not from the request. Rotation is zero-downtime. A partner acts for a policyholder with a delegated token that only reaches that policyholder's own policy."
 
-**Honest limitation:** mTLS client authentication registers but the handshake is unproven. If the test fails, offer DPoP and `private_key_jwt` instead. Do not claim mTLS.
+**Honest limitation:** The exchanged token is opaque: it has no `act` claim, so the demo does not say the partner is recorded as the actor. The actor allow-list (`actorCriteria`) is not enforced by Verify. The control is the requested scope plus the policyholder check at the API. mTLS client authentication is not possible on this tenant: the handshake sends no client-certificate request `[LIVE]`. The demo uses `private_key_jwt` and DPoP instead. The API is a local stub standing in for IFC's gateway.
 
 ---
 
@@ -538,7 +539,7 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 | Question | Answer |
 |---|---|
 | Can we have a separate tenant per brand? | Not on this tenant. Sub-tenants are reseller-only `[LIVE]`. Per-brand experience via apps, policies and themes. Ask IBM for the options. |
-| Is mTLS supported for APIs? | Registration of `tls_client_auth` works; the end-to-end handshake is not yet proven. `private_key_jwt` is proven. |
+| Is mTLS supported for APIs? | Not on this tenant `[LIVE]`: `tls_client_auth` clients register, but the TLS handshake to the tenant never asks the client for a certificate, so mTLS cannot authenticate. `private_key_jwt` (client assertion) and DPoP-bound tokens are proven and are the supported machine-client options here. Ask IBM whether a client-certificate option can be enabled. |
 | Can our fraud engine feed the login decision? | Yes through an `external_risk` webhook in a policy; it is a policy input, not an IBM model feature. |
 | Can users keep their old passwords on migration? | Yes for supported hash formats via bulk import; the supported list is being confirmed with IBM. |
 | Is ReBAC native? | No. Verify authenticates; OpenFGA or IFC's rules engine decides. |
