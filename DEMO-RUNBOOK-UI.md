@@ -37,7 +37,7 @@
 | 09 | API security | **READY NOW** for the scripted terminal path (25/25 `[LIVE]`, `verify.js` PASS) / admin console is a short look | Terminal (`run.js`), admin console (applications, auth methods) | No `act` claim on the exchanged token; `actorCriteria` not enforced; mTLS not demonstrated: the tenant TLS edge does not request a client certificate (no `CertificateRequest` in the handshake, TLS 1.2 and 1.3 `[LIVE]`), so the demo uses `private_key_jwt` and DPoP |
 | 10 | Per-brand login | **PARTIAL NOW**: policy, language, per-brand customers and per-brand administrators scripted 49/49 `[LIVE]`; brand look and custom domains NEED IBM | Browser with 2 brand portals on `aurora.localhost:4101` / `boreal.localhost:4102`, terminal, admin console (applications, owners) | Branding refused on the trial (403 `CSIAZ3060E`): Verify pages stay IBM-styled, only the language switches; custom IdP domains not available; brand admin cannot change policy and can read all users; no sub-tenants |
 | 11 | Legacy migration | PARTIAL NOW (bulk, reset, rollback and JIT-pattern scripted 52/52 [LIVE]) | Terminal, login page, admin console | Native JIT needs Flow designer or Bridge (IBM); browser pass is a human step |
-| 12 | ReBAC | NEEDS BUILD | Gateway stub UI/terminal | Not a Verify-native feature: Verify + OpenFGA |
+| 12 | ReBAC | **PARTIAL NOW**: scripted 53/53 `[LIVE]`, `verify.js` 16 PASS / 0 FAIL / 4 HUMAN; browser look is a human step | Gateway console in a browser (`127.0.0.1:4170`) or terminal (`cli.js`), admin console (users) | Not a Verify-native feature: Verify authenticates, OpenFGA (open source, stand-in) authorizes; the "IdP calls the rules engine while minting the token" variant is not possible on this tenant (built-in attribute functions only) |
 | 13 | Broker lifecycle, immediate revocation | PARTIAL NOW (admin console deactivate) / NEEDS BUILD (timed script) | Admin console, demo app, terminal | Webhook delivery needs a public tunnel |
 | 14 | CIBA agent-initiated | NEEDS BUILD + human mailbox/phone | Agent page, caller's email/phone | Approval is a real human action |
 | 15 | Consent (PIPEDA) | PARTIAL NOW (comm. prefs, consent history, download, delete) / NEEDS BUILD (third parties, expiry, DSAR) | Demo app, admin console | DSAR SLA tracking is the stub's job, not Verify's |
@@ -441,19 +441,31 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-12: ReBAC
 
-**Readiness:** NEEDS BUILD (OpenFGA container).
+**Readiness:** PARTIAL NOW. Built and verified by script against the real tenant: 53/53 checks (`demo/out/uc12.json`), `verify.js` 16 PASS / 0 FAIL / 4 HUMAN `[LIVE]`. A person has not yet looked at the console in a browser `[HUMAN]`. The token-minting callout is not possible here `[LIVE]`.
 
-**Prerequisites:** Podman allowed to pull OpenFGA; `stubs/policy-api`; seeded brokers/clients/policies.
+**Prerequisites:** `node demo/uc12-rebac/setup.js` (idempotent; downloads the OpenFGA binary on first run, checksum verified; no Podman). Then, in a shell you leave open: `node demo/uc12-rebac/serve.js` (engine on :4171, gateway and console on `http://127.0.0.1:4170`). Passwords are in `demo/out/uc12.state.json`: the server reads them, never show that file. The people: **Anna** and **Ben** (brokers of Alpha / Beta), **Maya** and **Noor** (managers of Alpha / Beta), **Zoe** (valid account, no brokerage). Policies `IFC-100001..3` are Alpha's clients (Tremblay, Gagnon), `IFC-100004..6` Beta's (Roy, Lavoie).
 
-**Click path**
-1. Show the model diagram: brokerage → broker → client → policy.
-2. Terminal/stub UI: broker A requests client X's policy → allowed.
-3. Broker A requests client Y (belongs to another brokerage) → denied.
-4. Reassign broker A to another brokerage (tuple update). Re-run: results change immediately, no re-login.
+**Click path** (browser console `http://127.0.0.1:4170`; every step has a terminal twin in brackets)
+1. Top table: who can see what, every person against every policy, green = view, blue = view and edit, red = no. Say the model out loud: brokerage → broker → client → policy. [`cli.js matrix`]
+2. Section 1: choose **Anna**, Sign in. This is a real Verify sign-in; the answer shows her subject and the `department` claim `BRG-A` in her ID token. [`cli.js signin anna`]
+3. Section 2: **read IFC-100001** (her client Tremblay). 200, allowed. Point at the reasoning list: policy → client → brokerage → "Anna placed" → "Anna is a broker of BRG-A today". The time shown is one Verify introspection plus one engine check. [`cli.js read anna IFC-100001`]
+4. Read **IFC-100004** (Roy, the other brokerage). 403, denied, with the reason. [`cli.js read anna IFC-100004`]
+5. Choose **Maya** (a manager, placed nobody), read IFC-100003. Allowed: access inherited from the brokerage, no per-policy grant. Try **edit** as Maya: denied (managers read, the servicing broker writes). [`cli.js read maya IFC-100003`, `edit maya IFC-100003`]
+6. Choose **Zoe**, read anything: 403. "Authenticated is not authorized." [`cli.js read zoe IFC-100001`]
+7. Anna again, action **list everything I can access** (3 policies) and **who can access this policy** on IFC-100001 (Anna and Maya; edit: Anna). The audit question. [`cli.js list anna`, `who anna IFC-100001`]
+8. **The reassignment.** Section 3: Broker moves **Anna** to **BRG-B**, Move. The table flips in front of the audience (the console flashes it). Without signing in again, Anna reads IFC-100001: **403**. Same token (the request line shows her token's issue time). [`cli.js move anna BRG-B`, `cli.js read anna IFC-100001`]
+9. Move Anna back to BRG-A: access returns, same token. Then tick "takes the book of business", move Anna to BRG-B: she keeps her three clients, Maya loses them, Noor gains them. Reset demo data. [`cli.js move anna BRG-A`, `move anna BRG-B --book`, `reset`]
+10. Admin console → Directory → Users → `ifc-demo-uc12-anna`: the `department` attribute follows the move (written by a 2-entitlement API client). A new sign-in shows the new `department`; the old token still says the old one.
+11. Optional: deactivate `ifc-demo-uc12-maya` (the script proved the SCIM `PATCH active=false`; the admin-console button was proven for UC-13, not re-run here), then read as Maya: **401**. Verify stops her even though the graph still says allow. Reactivate. [`cli.js log` shows every decision and its reason]
 
-**Talk track:** "Verify authenticates the broker. A relationship engine decides what that broker may see. Changing a relationship changes access instantly."
+**Talk track:** "Verify authenticates the broker and issues the token. A relationship engine decides what that broker may see, and the gateway asks it on every request. That is why changing a relationship changes access immediately, with no new token and no re-login. The token tells you who; it is not where you store what they can see."
 
-**Honest limitation:** Not Verify-native. Position as Verify + OpenFGA (open source) or IFC's existing rules engine.
+**Honest limitation, state clearly:**
+- **Not Verify-native.** No relationship graph, inherited-access evaluation or "list what I can access" was found in the Verify documentation or the tenant API `[DOCS]`. The engine here is OpenFGA, open source and a stand-in for whatever IFC runs `[LIVE]`.
+- **The PDF names a second mechanism**, "the IdP calls the rules engine during token minting to write claims". It is **not possible on this tenant**: attribute functions are built-ins only, scripted attribute sources are refused `[LIVE]`; external callouts are a paid-tier feature `[DOCS]`. Ask IBM about IFC's tier `[HUMAN]`. The request-time pattern shown here is the better one for instant changes, because claims baked into a token go stale until it expires `[LIVE]`.
+- Claims in the token are a snapshot: after a move, the OLD token still carries the old `department`. Authorize on the engine, not on the claim.
+- The source system, gateway and relationship data are stubs with fictional data. IFC's real roles (assistants, delegates, MGAs, call-centre agents), source of truth, change rate and volume are unknown `[HUMAN]`. Scale test: 8,120 relationships in memory, check 1 to 6 ms: a hint, not a benchmark.
+- The engine is in memory; a restart empties it and `serve.js` rebuilds the graph from the source system.
 
 ---
 

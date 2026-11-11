@@ -69,6 +69,10 @@ Everything below is tagged by how I know it.
 | 42 | **Linkage attributes survive import and SCIM create (UC-11):** `externalId`, enterprise `department` and `employeeNumber` (CSV columns `externalId`, `department`, `employee_id`), `preferredLanguage`, and the custom attribute `accountId` (CSV column `accountId`, SCIM `urn:ietf:params:scim:schemas:extension:ibm:2.0:User.customAttributes`). SCIM filters work on `externalId` (`eq`, `sw`) and `urn:...enterprise:2.0:User:department`; the bare `department`/`employeeNumber` filters give 400 `CSIAI0050E`; a filter on the custom attribute is unknown (400). | Account-to-policy and account-to-brokerage links are preserved and queryable; use `externalId` for the legacy customer id. |
 | 43 | **Verify Bridge / external-authentication agent is not just unconfigured but not creatable (UC-11):** `GET /config/v1.0/onpremagents` = 404 `CSIBS0035E`; `POST` (several body shapes) = **401 `CSIBS0033E`** although the admin client holds `manageExternalAgents` and related entitlements. `POST /v1.0/identitysources` with type 1, 2, 3, 9 to 14, 17 is accepted (201) but those are social/OIDC types, not external authentication (probe objects deleted). | Native JIT option 1 (Bridge) is an IBM-enablement item, not a Podman item. Corrects the guide's "run the Bridge agent with Podman" as the next step. |
 | 44 | **JIT pattern that works on this tenant (UC-11):** a gateway in front of Verify (password grant first; if the user is unknown to Verify, check the legacy store; if valid, `POST /v2.0/Users` with the verified plaintext so Verify hashes it itself, then sign in). First login ~1.5 to 2.2 s, later logins ~0.2 to 0.3 s with no legacy call; a legacy outage returns 503 for un-migrated users only. Verify's own error for a wrong password and for an unknown user is the same (`CSIAQ0264E`). | Built as `stubs/migration-gateway`. It is a pattern IFC would own, not a Verify feature. |
+| 45 | **OpenFGA runs natively, Podman is not needed (UC-12, 2026-11-11):** `podman machine start` reports success but the socket stays refused (`127.0.0.1:56232`), so no container could be pulled. The OpenFGA release `v1.22.1` is a single binary: download `openfga_1.22.1_darwin_arm64.tar.gz` plus `checksums.txt` from GitHub, check SHA-256, run `openfga run --datastore-engine memory --http-addr 127.0.0.1:4171 --grpc-addr 127.0.0.1:4172`. Gotchas: `openfga version` prints to **stderr**; **Node here runs under Rosetta (`process.arch` = `x64`) on an Apple Silicon Mac**, so pick the binary with `sysctl hw.optional.arm64`, not `process.arch`; store names must match `^[a-zA-Z0-9\s.\-/^_&@]{3,64}$`; writing an existing tuple or deleting a missing one is HTTP 400 (so sync by diff); at most 100 tuples per write by default. | The "Podman may pull the image" question (human item 7) is closed. `stubs/rules-engine/openfga.js` downloads and starts the engine. |
+| 46 | **Tokens and directory facts for authorization (UC-12):** the password-grant **access token is opaque** (not a JWT); the ID token is a JWT. `POST /oauth2/introspect` returns `sub` = the Verify user id (e.g. `8A60005FSE`), `preferred_username`, `active`. An **STS client can introspect** tokens issued to another client (200, `active:true`), so the gateway needs no admin credential. With `sendAllKnownUserAttributes: "true"` on the application the ID token and `/userinfo` also carry `department`, `job_title`, `email`, `given_name`, `family_name`, `uid`. SCIM `PATCH` with `op: add` on `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department` / `:employeeNumber` and on `title` returns 204 and replaces the value; a 2-entitlement API client (`readUsers`, `manageUsers`) is enough. A token issued before a SCIM `active=false` PATCH introspects `active:false` at once. | The gateway authenticates by introspection and authorizes by the engine on `sub`. Directory attributes are a snapshot in the token: a token issued before a move still says the old brokerage. |
+| 47 | **No token-time callout and no custom attribute source on this tenant (UC-12):** `GET /v1.0/attributefunctions` lists 13 built-ins only (`uppercase`, `lowercase`, `base64Encode/Decode`, `encodeURI*`, `decodeURI*`, `generateUuidIfNull`, `currentTimeInSeconds/Milliseconds`, `sha256`, `sha512`); `POST` on it is 405 `CSIAK4305E`. `POST /v1.0/attributes` accepts only source types `STATIC, CREDENTIAL, SCHEMA, PROFILE, ORG` (400 `CSIBE2716E`); `rule` is deprecated (400 `CSIBE2758E`). Putting `tokenResponseMap` in the application's `oidc.properties` is refused (400); no other placement was tried. | The PDF's "IdP calls the rules engine while minting the token" cannot be shown here. Say so; the request-time pattern is the demo. Whether `tokenResponseMap`/`introspectResponseMap` exist elsewhere in the model is `[INFER]` unproven. |
+| 48 | **A relationship model that survives "a broker who leaves" (UC-12):** `servicing = placed_by and member from brokerage` (an intersection) means the placing broker keeps access only while still a live member of the client's brokerage; deleting one membership tuple removes access on the next check, without touching client records. `viewer = servicing or manager from brokerage`; `editor = servicing` (a policy choice). OpenFGA v1.22.1 supports `list-objects` and `list-users` (the "all resources a user can access" and "who can access" asks). 8,120 relationships loaded in ~0.8 s; check ~1 to 6 ms, list-objects ~1 to 2 ms on this laptop, in memory (a hint, not a benchmark). | The model is in `stubs/rules-engine/model.js`. IFC's real roles and volumes are unknown. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -443,16 +447,40 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-12: ReBAC
 
-**Status:** Bob can build the external engine demo. Not a Verify-native feature.
+**Status: PARTIAL, built and verified (2026-11-11).** 53/53 live checks pass (`demo/uc12-rebac/run.js`), `verify.js` 16 PASS / 0 FAIL / 4 HUMAN, torn down and rebuilt from zero. The access decisions, the instant reassignment, the "all resources I can access" and "who can access" queries, and the audit trail are proven against the real tenant. **Not Verify-native** (Verify authenticates, OpenFGA authorizes), and the PDF's **token-minting callout is not possible on this tenant**. It is "built" rather than "partial" for everything the gateway pattern covers; it is labelled PARTIAL because one of the PDF's two mechanisms cannot be shown and IFC's real model is unknown.
 
-**Build steps**
-1. `stubs/rules-engine`: run **OpenFGA** with Podman (`/opt/podman/bin/podman` is installed `[LIVE]`) and load a model: `brokerage → broker → client → policy`.
-2. `demo/uc12-rebac/seed.js`: create SCIM users for brokers and clients and mirror them as tuples.
-3. Gateway stub `stubs/policy-api`: validates the Verify access token with introspection, then calls OpenFGA `check` / `list-objects`.
-4. `reassign.js`: move a broker to another brokerage (tuple update); re-check; access changes instantly with no re-login.
-5. Optional (paid tenant): attribute-function HTTP callout to add a coarse claim. Not available on trial `[DOCS]`.
+**Proven `[LIVE]`**
+- Real sign-in (password grant) and real token introspection by a gateway that uses its **own STS client**, never the admin client (finding 46).
+- **Inherited access** (brokerage → broker → client → policy): the placing broker reads and edits; a manager of the brokerage reads but cannot edit; a broker or manager of the other brokerage is refused (403) with the reasoning path in the answer. Zoe (valid account, no brokerage) is authenticated but sees nothing: authenticated is not authorized.
+- **Reassignment with no re-login:** Anna moves to the other brokerage, and with the same access token she goes from 200 to 403 on the next call (a graph write of 1 tuple added and 1 removed, ~6 ms, plus ~0.45 s for the directory PATCH). A new sign-in then carries the new `department`, the old token still carries the old one. Moving back restores it. Moving with her book of business transfers the clients' visibility, and the managers of both brokerages change accordingly.
+- **A broker who leaves loses access immediately** while the clients stay with the brokerage and its manager (finding 48). Client transfer between brokers is one graph transaction.
+- **"All resources this user can access"** (`list-objects`) and **"who can access this resource"** (`list-users`), plus an audit log (who, action, policy, allow/deny, reason, path, introspection and check times).
+- **Identity layer wins:** SCIM-deactivating a user makes the token introspect `active:false`, so the gateway answers 401 even though the graph still says allow (finding 46).
+- Exhaustive cross-check: all 30 broker × policy cells (view and edit) from the engine equal an independent oracle computed from the source data, after every change; the same 30 decisions through the gateway with real tokens also match.
+- Scale smoke test, in memory: 8,120 relationships loaded in ~0.8 s, check ~1 to 6 ms, list-objects ~1 to 2 ms (a hint, not a benchmark).
+- A sync job that mirrors source-system changes into the Verify directory runs as a **2-entitlement API client** and is refused admin work (403).
 
-**Human steps:** none. **Message:** present as "Verify + external ReBAC engine".
+**Not proven / limits**
+- `[LIVE]` **Token-minting callout is not possible** (finding 47): attribute functions are built-ins, scripted attribute sources are refused, `tokenResponseMap` in `oidc.properties` is refused. Paid-tier external callouts remain `[DOCS]`; ask IBM. The demo does not need it: the gateway asks the engine on every request, which is what makes changes instant.
+- `[HUMAN]` A real browser look at the console and the terminal flow. A headless render proved the page loads, the matrix draws (6 policies × 5 people), and the dropdowns fill; the scripted run proved every API call. No person has looked at it.
+- `[HUMAN]` IFC's real roles (assistants, delegates, MGAs, call-centre agents), source of truth, change rate and volume. The model here is the PDF's hierarchy plus a manager role.
+- `[INFER]` OpenFGA is the stand-in; IFC may keep its own rules engine. The gateway needs only `check`, `list-objects`, `list-users`.
+- `[LIVE]` The engine is in memory, so a restart empties it; `serve.js` rebuilds the graph from the source system on start (that is also the recovery story).
+
+**Corrections to the earlier plan `[LIVE]`**
+- "Run OpenFGA with Podman": the Podman VM did not come up on this machine, and it is not needed. A checksummed native binary is used (finding 45). Human item 7 is closed.
+- "`seed.js`" and "`reassign.js`" are folded into `setup.js` (users, directory), the graph sync in `stubs/policy-api/source.js`, and `cli.js move`.
+- "Gateway stub validates the token with introspection": done with an STS client; no admin credential in the gateway.
+- Users and clients are not both mirrored into SCIM: only the 5 brokers and managers are Verify users. Policyholder clients are records in the source system (IFC's policyholders sign in elsewhere, UC-09/UC-10).
+
+**Build (as built):** `stubs/rules-engine/{openfga,model}.js`, `stubs/policy-api/{source,server}.js`, `stubs/policy-api/console.html`, `demo/uc12-rebac/{common,runtime,setup,run,serve,cli,verify,teardown}.js`, `README.md`. No change to `demo/lib`.
+
+**Human steps `[HUMAN]`** (commands in `demo/uc12-rebac/README.md`)
+1. Browser look (5 min): `node demo/uc12-rebac/setup.js && node demo/uc12-rebac/serve.js`, open `http://127.0.0.1:4170`, sign in as Anna, read IFC-100001 then IFC-100004, move Anna, read again. Or use `node demo/uc12-rebac/cli.js ...`.
+2. Ask IFC for their roles, source of truth, change rate and volumes.
+3. IBM: confirm whether external callouts in attribute functions are available on IFC's contract tier.
+
+**Open risks:** the engine is a stand-in, so IFC may ask "is that product part of Verify?" The answer is no. Say it first and position Verify as the identity and token layer.
 
 ---
 
@@ -519,11 +547,12 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 4 | `mkcert -install`, add `127.0.0.1 ifc-demo.local` to `/etc/hosts`. | UC-02 | 15 min |
 | 5 | Provide a test mailbox you can read (or several aliases). | UC-01, UC-03, UC-06, UC-14 | 5 min |
 | 6 | Run the passkey ceremony once in a browser. | UC-02 | 5 min |
-| 7 | Decide whether the Podman image for OpenFGA may be pulled on this machine. (The Verify Bridge is not an image problem: the agent configuration cannot be created, finding 43.) | UC-12 | 5 min |
+| 7 | **Closed (finding 45):** OpenFGA runs as a checksummed native binary, no Podman needed. Replaced by item 12 below. | UC-12 | 0 |
 | 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
 | 9 | UC-08 real browser + back-channel: `node demo/uc08-sso/serve.js`, then tunnel and `setup.js --backchannel` (steps in UC-08 above). | UC-08 | 15 min |
 | 10 | UC-10 real browser: `node demo/uc10-brands/serve.js`, open `aurora.localhost:4101` and `boreal.localhost:4102` (steps in UC-10 above). | UC-10 | 5 min |
 | 11 | UC-11 browser pass: `node demo/uc11-migration/serve.js`, sign in at `http://localhost:4051` as `ifc-demo-uc11-jean`, then `bulk.js` and `/portal-login` as `ifc-demo-uc11-rene` (steps in UC-11 above). Tell IFC to name their legacy hash algorithm. | UC-11 | 10 min |
+| 12 | UC-12 browser look: `node demo/uc12-rebac/setup.js && node demo/uc12-rebac/serve.js`, open `http://127.0.0.1:4170`, pick Anna, Sign in, read IFC-100001 (allowed) then IFC-100004 (refused), move Anna to BRG-B, read again (refused with the same token), Reset. Ask IFC for their roles, source of truth and volumes. | UC-12 | 10 min |
 
 ## 4. Message to IBM (copy/paste)
 
@@ -558,4 +587,5 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `stubs/rp-sso/`, `demo/uc08-sso/`, `demo/lib/idempotent.js` (4 helpers added) | UC-08: three RP stubs, scripted browser, scenarios, verify/teardown | Section 2, UC-08 |
 | `stubs/ifc-api/`, `demo/uc09-api/`, `demo/lib/idempotent.js` (`ensureStsClient` takes `actorRequired`) | UC-09: protected policy API stub (scope, allow-list, DPoP, policyholder rule for delegated tokens), `private_key_jwt` + DPoP machine clients, RFC 8693 on-behalf-of, key rotation, verify/teardown | Section 2, UC-09 |
 | `stubs/legacy-auth-store/`, `stubs/migration-gateway/`, `demo/uc11-migration/` | UC-11: legacy store stub (12 hash schemes), gateway JIT pattern, CSV bulk import, forced reset, rollback, 52 live checks, verify/teardown. No shared helper changed | Section 2, UC-11 |
+| `stubs/rules-engine/`, `stubs/policy-api/`, `demo/uc12-rebac/` | UC-12: OpenFGA native binary downloader/launcher and model, source-system stub with graph sync, policy gateway with reasoning path and audit log, presenter console and terminal client, 53 live checks, verify/teardown. No shared helper changed | Section 2, UC-12 |
 

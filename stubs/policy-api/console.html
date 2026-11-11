@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UC-12 ReBAC: policy gateway console (stub)</title>
+<style>
+  body { font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; margin: 0; color: #1f2328; background: #f7f8fa; }
+  header { background: #1f2328; color: #fff; padding: 10px 20px; }
+  header b { font-size: 16px; } header span { color: #9aa4af; margin-left: 12px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; }
+  section { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 12px 14px; }
+  section.wide { grid-column: 1 / 3; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #57606a; margin: 0 0 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid #eef0f2; padding: 4px 8px; text-align: left; vertical-align: top; }
+  th { color: #57606a; font-weight: 600; }
+  .ok { background: #dff3e4; color: #12602a; text-align: center; font-weight: 600; }
+  .no { background: #fbe4e4; color: #8a1c1c; text-align: center; }
+  .ed { background: #cfe8ff; color: #0b3d75; text-align: center; font-weight: 600; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid #c9ced4; background: #fff; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #eef2f6; } button.primary { background: #3b82d4; border-color: #3b82d4; color: #fff; }
+  select, input { font: inherit; padding: 3px 6px; border: 1px solid #c9ced4; border-radius: 4px; }
+  pre { margin: 6px 0 0; background: #0f1419; color: #d7dde4; padding: 10px; border-radius: 4px; overflow: auto; max-height: 300px; font-size: 12px; }
+  .muted { color: #57606a; } .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+  .flash { outline: 3px solid #f5b942; }
+</style>
+</head>
+<body>
+<header><b>IFC policy gateway</b><span>UC-12 relationship-based authorization: Verify (who you are) + OpenFGA (what you may see). Stub console, 127.0.0.1 only.</span></header>
+<main>
+  <section class="wide">
+    <h2>Who can see what: the engine's answer for every broker and policy (green = view, blue = view and edit)</h2>
+    <div id="matrix" class="muted">loading…</div>
+    <div class="muted" id="matrixInfo"></div>
+  </section>
+
+  <section>
+    <h2>1. Sign in as a broker (Verify)</h2>
+    <div class="row"><select id="who"></select><button class="primary" onclick="signin()">Sign in</button></div>
+    <pre id="signinOut">Not signed in. The password is read from the local state file by the server; it never reaches this page.</pre>
+  </section>
+
+  <section>
+    <h2>2. Call the gateway with that broker's token</h2>
+    <div class="row">
+      <select id="act"><option value="view">read policy</option><option value="edit">edit policy</option><option value="list">list everything I can access</option><option value="who">who can access this policy</option></select>
+      <select id="pol"></select><button class="primary" onclick="callApi()">Send</button>
+    </div>
+    <pre id="callOut">Pick a broker, sign in, then send a request.</pre>
+  </section>
+
+  <section class="wide">
+    <h2>3. Change a relationship in the source system (it propagates to the engine and the Verify directory; no re-login)</h2>
+    <div class="row">
+      <b>Broker moves:</b><select id="mvB"></select> to <select id="mvG"></select>
+      <label><input type="checkbox" id="mvBook"> takes the book of business</label><button onclick="change({type:'move',broker:v('mvB'),brokerage:v('mvG'),withBook:ck('mvBook')})">Move</button>
+      <b style="margin-left:14px">Broker leaves brokerage:</b><select id="lvB"></select><button onclick="change({type:'leave',broker:v('lvB')})">Leave</button>
+    </div>
+    <div class="row"><b>Client changes hands:</b><select id="trC"></select> to broker <select id="trB"></select><button onclick="change({type:'transfer',client:v('trC'),broker:v('trB')})">Transfer</button>
+      <button style="margin-left:14px" onclick="change({type:'reset'})">Reset demo data</button></div>
+    <pre id="changeOut">No change yet.</pre>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id), v = (id) => $(id).value, ck = (id) => $(id).checked;
+let S = null;
+async function j(url, body) { const r = await fetch(url, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}); return r.json(); }
+const show = (id, o) => { $(id).textContent = typeof o === 'string' ? o : JSON.stringify(o, null, 2); };
+function fill(id, items) { const e = $(id), cur = e.value; e.innerHTML = items.map(([val, label]) => `<option value="${val}">${label}</option>`).join(''); if (cur && items.some(([x]) => x === cur)) e.value = cur; }
+async function refresh(flash) {
+  S = await j('/console/state'); const M = await j('/console/matrix');
+  const bro = S.brokers, pols = Object.keys(S.policies);
+  fill('who', bro.map((b) => [b.key, `${b.given} ${b.family} (${b.role}, ${b.brokerage || 'no brokerage'})`]));
+  fill('mvB', bro.map((b) => [b.key, b.given])); fill('lvB', bro.map((b) => [b.key, b.given])); fill('trB', bro.map((b) => [b.key, b.given]));
+  fill('mvG', Object.entries(S.brokerages).map(([k, n]) => [k, `${k} ${n}`]));
+  fill('trC', Object.entries(S.clients).map(([k, c]) => [k, `${k} ${c.name}`]));
+  fill('pol', pols.map((n) => [n, `${n} (${S.policies[n].client} ${S.clients[S.policies[n].client].name}, ${S.clients[S.policies[n].client].brokerage})`]));
+  let h = '<table><tr><th>Policy</th><th>Client</th><th>Held by</th>' + bro.map((b) => `<th>${b.given}<br><span class="muted">${b.brokerage || 'none'}</span></th>`).join('') + '</tr>';
+  for (const n of pols) {
+    const c = S.clients[S.policies[n].client];
+    h += `<tr><td>${n}<br><span class="muted">${S.policies[n].product}</span></td><td>${S.policies[n].client} ${c.name}<br><span class="muted">placed by ${S.brokers.find((b) => b.key === c.placedBy).given}</span></td><td>${c.brokerage}</td>`;
+    for (const b of bro) { const m = M.matrix[b.key][n]; h += `<td class="${m.edit ? 'ed' : m.view ? 'ok' : 'no'}">${m.edit ? 'view+edit' : m.view ? 'view' : '–'}</td>`; }
+    h += '</tr>';
+  }
+  $('matrix').innerHTML = h + '</table>'; $('matrixInfo').textContent = `${M.tuples} relationships in the graph · full matrix computed in ${M.ms} ms`;
+  if (flash) { $('matrix').classList.add('flash'); setTimeout(() => $('matrix').classList.remove('flash'), 1200); }
+}
+async function signin() { show('signinOut', 'signing in…'); show('signinOut', await j('/console/signin', { broker: v('who') })); refresh(); }
+async function callApi() { show('callOut', 'sending…'); show('callOut', await j('/console/call', { broker: v('who'), action: v('act'), policy: v('pol') })); }
+async function change(c) { show('changeOut', 'applying…'); show('changeOut', await j('/console/change', c)); refresh(true); }
+refresh();
+</script>
+</body>
+</html>
