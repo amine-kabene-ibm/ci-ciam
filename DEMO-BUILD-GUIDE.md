@@ -62,6 +62,13 @@ Everything below is tagged by how I know it.
 | 35 | Consent page (`consent_action: always_prompt`) is per application and localized, but shows only `client_name`: `client_uri`, `policy_uri`, `tos_uri` and the description are not shown (UC-10). | Brand consent wording and links need the theme. |
 | 36 | Custom domains (UC-10): a request to the tenant IP with an unregistered `Host` returns 400; `GET /v1.0/identitysources/subtenants` 405; `GET /config/v1.0/email-domain-auth` 400 `CSIAP3564E` ("Sender customization is not enabled"); `/v2.0/tenant/properties` lists only the tenant host. | `idp.brand1.com` cannot be improvised; IBM / sales. Brand portals run on `*.localhost` (DCR accepts those redirect URIs). |
 | 37 | One tenant host means one browser session (UC-10): after Aurora, Boréal asks only its second factor. | Hard isolation between brands needs separate tenants. |
+| 38 | **CSV import (UC-11, 2026-11-11):** `POST /v2.0/CSV/importUsers?notifyType=NONE`, multipart field **`file`**, returns **202 `{_id}`** (async job); status at **`GET /v2.0/CSV/jobs/{id}`** (`state`, `statistics.processedCount/errorsCount/errors[{id,failureReason}]`; the earlier guess `importStatus` is 404). Header `usershouldnotneedtoresetpassword: true` keeps the imported password usable; without it the user must change it (`CSIAQ0267E`). A row with a blank user name makes the whole job vanish (job id 404). An existing user is **never overwritten** (`CSIAI0047E`). Needs only `readUsers` + `manageUsers` (a 2-entitlement API client works). | UC-11 bulk is built on this. `GET /v2.0/CSV/headerNames` lists the columns. |
+| 39 | **Which pre-hashed password prefixes work (UC-11), tested by importing and signing in with the original password:** works = `{SSHA256} {SHA256} {SSHA384} {SHA384} {SSHA512} {SHA512} {SSHA} {SHA} {MD5}` (salts of 4, 8 and 16 bytes, non-ASCII and comma/quote passwords). Does **not** work = `{SMD5}`, `{SHA1}` (the spelling; `{SHA}` works), `{PBKDF2}`, `{CRYPT}`, `{PLAIN}`, a bcrypt string: the import reports **success** and stores the text literally as the password, so the customer cannot sign in. | Answers the "supported `{TYPE}` list" question for 9 formats `[LIVE]`; **always filter by format before importing**. IBM should still confirm the official list. The earlier "repo helper uses `{SHA256}`" doubt is resolved: it works. |
+| 40 | **Password policy and imports (UC-11):** minimum length is 8 (7 gives `CSIAI0020E`) for SCIM create. A **pre-hashed** import skips the check (a 5-character password imported as `{SSHA256}` signs in). Password change: SCIM `PATCH` replace `password` with the no-reset header is 204 and the new password works at once; without the header the user is flagged for change; re-using the old password gives `CSIAI0021E`. | JIT with a plaintext password must handle a legacy password shorter than 8 (UC-11 scenario H). |
+| 41 | **Forced password change on the hosted page (UC-11):** a user created/imported without the no-reset header gets the Verify page "Change the initial password" (`CSIAH0307I`, Skip Now button) after a correct login; a script that posts `operation=verify` with `oldpassword`, `newpassword`, `confirmpassword` to the page's action completes it (the new password then works, the old one does not). Password-grant sign-in says `CSIAQ0267E`. | The "bulk with reset" half of IFC's requirement is handled by Verify itself. |
+| 42 | **Linkage attributes survive import and SCIM create (UC-11):** `externalId`, enterprise `department` and `employeeNumber` (CSV columns `externalId`, `department`, `employee_id`), `preferredLanguage`, and the custom attribute `accountId` (CSV column `accountId`, SCIM `urn:ietf:params:scim:schemas:extension:ibm:2.0:User.customAttributes`). SCIM filters work on `externalId` (`eq`, `sw`) and `urn:...enterprise:2.0:User:department`; the bare `department`/`employeeNumber` filters give 400 `CSIAI0050E`; a filter on the custom attribute is unknown (400). | Account-to-policy and account-to-brokerage links are preserved and queryable; use `externalId` for the legacy customer id. |
+| 43 | **Verify Bridge / external-authentication agent is not just unconfigured but not creatable (UC-11):** `GET /config/v1.0/onpremagents` = 404 `CSIBS0035E`; `POST` (several body shapes) = **401 `CSIBS0033E`** although the admin client holds `manageExternalAgents` and related entitlements. `POST /v1.0/identitysources` with type 1, 2, 3, 9 to 14, 17 is accepted (201) but those are social/OIDC types, not external authentication (probe objects deleted). | Native JIT option 1 (Bridge) is an IBM-enablement item, not a Podman item. Corrects the guide's "run the Bridge agent with Podman" as the next step. |
+| 44 | **JIT pattern that works on this tenant (UC-11):** a gateway in front of Verify (password grant first; if the user is unknown to Verify, check the legacy store; if valid, `POST /v2.0/Users` with the verified plaintext so Verify hashes it itself, then sign in). First login ~1.5 to 2.2 s, later logins ~0.2 to 0.3 s with no legacy call; a legacy outage returns 503 for un-migrated users only. Verify's own error for a wrong password and for an unknown user is the same (`CSIAQ0264E`). | Built as `stubs/migration-gateway`. It is a pattern IFC would own, not a Verify feature. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -403,16 +410,34 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-11: Legacy IAM migration
 
-**Status:** Bob can build **bulk import**. JIT depends on Flow designer (blocked) or the Verify Bridge (needs IBM registry access).
+**Status: PARTIAL, built and verified (2026-11-11).** 52/52 live checks pass (`demo/uc11-migration/run.js`), `verify.js` 11 PASS / 0 FAIL / 5 HUMAN, torn down and rebuilt from zero. **Bulk migration, bulk with forced reset, rollback, linkage preservation and a just-in-time pattern are proven. The just-in-time part is a gateway pattern in front of Verify, not a native Verify feature on this tenant** (Flow designer off, Bridge not creatable). IFC's real legacy hash format is unknown.
 
-**Build steps**
-1. `stubs/legacy-auth-store`: users with a legacy hash. Choose the hash IFC uses; the supported `{TYPE}` prefixes must be confirmed (doc shows `{SSHA256}`).
-2. Bulk: `demo/uc11-migration/bulk.js`: `GET /v2.0/CSV/headerNames?filter=user` returned the header list `[LIVE]` (`preferred_username` required, `externalId`, …). Build CSV with `password` column of `{SSHA256}…` values, then `POST /v2.0/CSV/importUsers` (multipart) with `notifyType=NONE`. Header `usershouldnotneedtoresetpassword: true`.
-3. Prove a migrated user logs in with the original password using a DCR password-grant client `[LIVE pattern]`.
-4. JIT option 1 (Bridge): `POST /config/v1.0/onpremagents` (`purpose: EXTAUTHN`) then `POST /v2.0/identitysources`; run the Bridge agent with Podman. Needs the Verify Bridge image from IBM Container Registry `[HUMAN]`. Note: `GET /config/v1.0/onpremagents` returned 404 `CSIBS0035E` "unable to find a configuration", meaning the Bridge feature isn't configured on this tenant yet.
-5. JIT option 2: Flow designer. **Blocked** `[LIVE]`.
+**Proven `[LIVE]`**
+- Bulk: legacy extract -> CSV with pre-hashed passwords -> `POST /v2.0/CSV/importUsers` -> job report. Customers sign in with the **original** password, no reset (4 policyholders/brokers, 4 hash formats in the run; 9 formats in the matrix, finding 39).
+- Bulk with reset: the import without the no-reset header forces a password change on the hosted Verify page (finding 41).
+- Bad data is reported per row (`CSIAI0096E`) while the good rows import; re-running changes nothing (`CSIAI0047E`).
+- Linkage: legacy customer id (`externalId`), policy number (`accountId`), brokerage (`department`) and broker id (`employeeNumber`) are preserved and queryable (finding 42).
+- JIT pattern: first login verifies against the legacy store, creates the user (Verify re-hashes), carries the linkage; afterwards the legacy store can be switched off. Covers formats the import cannot read (`{PBKDF2}`, `{SMD5}`) and legacy passwords below the new minimum (asks for a new one).
+- Rollback: delete migrated users, legacy store untouched, customers migrate again. The migration tooling runs as a 2-entitlement API client and is refused elsewhere (403).
 
-**Human steps:** `[HUMAN]` ask IBM for Flow designer and for Bridge image access; ask for supported hash list and a financial-services migration reference.
+**Not proven / limits `[LIVE]`**
+- Native JIT inside Verify: Flow designer 403 `CSIBZ0098E`; Bridge `onpremagents` 404 `CSIBS0035E`, create 401 `CSIBS0033E` (finding 43). IBM must enable it.
+- IFC's legacy algorithm, volume (only 11 records tested), import limits, the official hash-prefix list, and a prior financial-services migration reference (the PDF asks for it): `[HUMAN]` / IBM.
+- A person has not looked at the gateway page or the hosted change-password page in a browser (only a scripted browser has).
+
+**Corrections to the earlier plan `[LIVE]`**
+- "Run the Bridge agent with Podman" is not the blocker: the agent configuration cannot be created (401), so it is an IBM enablement, not an image pull.
+- "`{SSHA256}` is the only documented prefix / the helper uses `{SHA256}`": nine prefixes work, three popular ones silently do not (finding 39).
+- "`GET /v2.0/CSV/importStatus`": the job endpoint is `/v2.0/CSV/jobs/{id}`; the multipart field is `file`.
+
+**Build (as built):** `stubs/legacy-auth-store/{hashes,server}.js`, `stubs/migration-gateway/server.js`, `demo/uc11-migration/{common,setup,bulk,rollback,run,serve,show,verify,teardown}.js`, `README.md`. No change to `demo/lib` (all helpers reused).
+
+**Human steps `[HUMAN]`** (commands in `demo/uc11-migration/README.md`)
+1. Browser pass: `node demo/uc11-migration/setup.js && node demo/uc11-migration/serve.js`; open `http://localhost:4051`, sign in as `ifc-demo-uc11-jean` (password in `demo/out/uc11.state.json`, `users.jean.password`), then `node demo/uc11-migration/bulk.js` and `http://localhost:4051/portal-login` as `ifc-demo-uc11-rene`.
+2. Ask IFC for their legacy hash algorithm, user and broker volumes, and legacy password rules.
+3. IBM: Flow designer or the Bridge external-authentication agent, official hash list, import limits, migration reference.
+
+**Open risks:** the headline ask ("verify against the legacy store transparently") is a pattern IFC would run in their own login layer unless IBM enables Flow or the Bridge; say so before IFC finds out.
 
 ---
 
@@ -494,10 +519,11 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 4 | `mkcert -install`, add `127.0.0.1 ifc-demo.local` to `/etc/hosts`. | UC-02 | 15 min |
 | 5 | Provide a test mailbox you can read (or several aliases). | UC-01, UC-03, UC-06, UC-14 | 5 min |
 | 6 | Run the passkey ceremony once in a browser. | UC-02 | 5 min |
-| 7 | Decide whether Podman images (OpenFGA, Verify Bridge) may be pulled on this machine. | UC-11, UC-12 | 5 min |
+| 7 | Decide whether the Podman image for OpenFGA may be pulled on this machine. (The Verify Bridge is not an image problem: the agent configuration cannot be created, finding 43.) | UC-12 | 5 min |
 | 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
 | 9 | UC-08 real browser + back-channel: `node demo/uc08-sso/serve.js`, then tunnel and `setup.js --backchannel` (steps in UC-08 above). | UC-08 | 15 min |
 | 10 | UC-10 real browser: `node demo/uc10-brands/serve.js`, open `aurora.localhost:4101` and `boreal.localhost:4102` (steps in UC-10 above). | UC-10 | 5 min |
+| 11 | UC-11 browser pass: `node demo/uc11-migration/serve.js`, sign in at `http://localhost:4051` as `ifc-demo-uc11-jean`, then `bulk.js` and `/portal-login` as `ifc-demo-uc11-rene` (steps in UC-11 above). Tell IFC to name their legacy hash algorithm. | UC-11 | 10 min |
 
 ## 4. Message to IBM (copy/paste)
 
@@ -507,7 +533,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 > 3. Adaptive access (Trusteer) and activate Threat detection (config is `inactive`).
 > 4. SMS and voice OTP delivery (API returns CSIAP3545E / CSIAP3546E "not supported for this account"); confirm quota and whether a customer SMS gateway can be attached (`external_sms` webhook).
 >
-> Please also confirm: (a) multiple custom IdP domains on one tenant; (b) delegated admin scoped to a subset of users (application owners are scoped per app but can read all users); (c) mTLS client authentication endpoint on SaaS; (d) supported password-hash prefixes for CSV import and the recommended JIT migration pattern; (e) whether one user can register more than one IBM Verify authenticator; (f) a prior financial-services migration reference; (g) the external-callout (HTTP) capability in attribute functions on a paid tenant.
+> Please also confirm: (a) multiple custom IdP domains on one tenant; (b) delegated admin scoped to a subset of users (application owners are scoped per app but can read all users); (c) mTLS client authentication endpoint on SaaS; (d) the official list of password-hash prefixes for CSV import (we measured nine that work and `{SMD5}`, `{SHA1}`, `{PBKDF2}` that import without error but do not sign in), and enable Flow designer or provision the Verify Bridge external-authentication agent (`POST /config/v1.0/onpremagents` returns 401 `CSIBS0033E`) for native just-in-time migration; (e) whether one user can register more than one IBM Verify authenticator; (f) a prior financial-services migration reference; (g) the external-callout (HTTP) capability in attribute functions on a paid tenant.
 
 ## 5. Recommended build order (updated by live findings)
 
@@ -515,7 +541,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 2. **UC-13, UC-14, UC-15** (proven or nearly proven). **UC-09 built and verified** (25/25 live; mTLS not possible on this host).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
 4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
-5. **UC-10 (partial, built; branding and domains need IBM)**, then **UC-12, UC-11 bulk, UC-05** (blocked or partial).
+5. **UC-10 (partial, built; branding and domains need IBM)**, **UC-11 (partial, built; native JIT needs IBM)**, then **UC-12, UC-05** (blocked or partial).
 
 ## 6. Changes made to the repo during this session
 
@@ -531,3 +557,5 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `demo/lib/verify.js` (`oauthClient`, `send` with DNS retry), `demo/lib/idempotent.js` (TOTP, STS, DCR helpers), `demo/lib/totp.js` (`totpPlayer`), `demo/uc06-voice/{common,setup}.js` | Shared helpers extracted for UC-07; UC-06 behaviour unchanged (32/32) | Section 1 |
 | `stubs/rp-sso/`, `demo/uc08-sso/`, `demo/lib/idempotent.js` (4 helpers added) | UC-08: three RP stubs, scripted browser, scenarios, verify/teardown | Section 2, UC-08 |
 | `stubs/ifc-api/`, `demo/uc09-api/`, `demo/lib/idempotent.js` (`ensureStsClient` takes `actorRequired`) | UC-09: protected policy API stub (scope, allow-list, DPoP, policyholder rule for delegated tokens), `private_key_jwt` + DPoP machine clients, RFC 8693 on-behalf-of, key rotation, verify/teardown | Section 2, UC-09 |
+| `stubs/legacy-auth-store/`, `stubs/migration-gateway/`, `demo/uc11-migration/` | UC-11: legacy store stub (12 hash schemes), gateway JIT pattern, CSV bulk import, forced reset, rollback, 52 live checks, verify/teardown. No shared helper changed | Section 2, UC-11 |
+

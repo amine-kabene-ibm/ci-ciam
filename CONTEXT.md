@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-10 (UC-09 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-11 (UC-11 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -26,13 +26,14 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | **UC-08 SSO and global logout**: `demo/uc08-sso/` (setup, run, serve, verify, teardown, README, browser), `stubs/rp-sso/` | `demo/uc08-sso/` | **Built, PARTIAL.** Verified live: 37/37 scenarios (`demo/out/uc08.json`), `verify.js` 14 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser, back-channel delivery (tunnel), idle/absolute timeouts (no API) `[HUMAN]` |
 | **UC-09 API security**: `demo/uc09-api/` (common, jwt, setup, serve, run, verify, teardown, README), `stubs/ifc-api/` | `demo/uc09-api/` | **Built and VERIFIED.** 25/25 live checks (`demo/out/uc09.json`), `verify.js` PASS, rebuilt from zero after teardown. `private_key_jwt` + DPoP + key rotation + RFC 8693 on-behalf-of (scoped, policyholder-only) proven `[LIVE]`. **mTLS not possible on this tenant** (no client-certificate request in the TLS handshake `[LIVE]`). No `act` claim; `actorCriteria` not enforced `[LIVE]` |
 | **UC-10 Per-brand login**: `demo/uc10-brands/` (common, themes, setup, run, serve, verify, teardown, README), `stubs/brand-portal/` | `demo/uc10-brands/` | **Built, PARTIAL.** 49/49 live checks (`demo/out/uc10.json`), `verify.js` 19 PASS / 0 FAIL / 5 HUMAN, torn down and rebuilt from zero. Proven: per-brand policy, EN/FR pages, per-brand customers (`all_users_entitled:false` + entitlements), delegated admin via application owners. **Not proven:** brand theme (branding 403 `CSIAZ3060E`; ZIPs built, never registered), custom IdP domains (IBM), passkey (human). |
+| **UC-11 Legacy migration**: `demo/uc11-migration/` (common, setup, bulk, rollback, run, serve, show, verify, teardown, README), `stubs/legacy-auth-store/`, `stubs/migration-gateway/` | `demo/uc11-migration/` | **Built, PARTIAL.** 52/52 live checks (`demo/out/uc11.json`), `verify.js` 11 PASS / 0 FAIL / 5 HUMAN, torn down and rebuilt from zero. Proven: CSV bulk import keeping the original password, hash-format matrix, forced reset, linkage attributes kept, rollback, least-privilege migrator, and a **gateway JIT pattern** (IFC would own it). **Not proven:** native JIT (Flow designer 403, Bridge create 401 `CSIBS0033E`: IBM), real browser pass (human), IFC's real hash algorithm, scale (11 records), prior-migration reference. |
 
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08**, **UC-09** and **UC-10** (see section 2). **Everything else is still only described in the build guide:** the other 10 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08**, **UC-09**, **UC-10** and **UC-11** (see section 2). **Everything else is still only described in the build guide:** the other 9 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -65,7 +66,7 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 8. **Webhook purposes available:** `identity_proofing`, `external_mfa`, `external_risk`, `notifications`, `external_sms`. `external_risk` is the way to feed IFC's own risk signals into a policy (UC-05). `external_sms` supports the bring-your-own-SMS-gateway ask (UC-02).
 9. **Access policy v5.0** accepts the condition types `geoLocation`, `threatInsights`, `trusteer`, `webhooks`, `ipAddress`, and more. Acceptance does not prove the feature is licensed.
 10. **No phone is registered** (`GET /v1.0/authenticators` returns 0). The Verify Profile authenticator client id is `5280f51a-9699-4d96-9dd9-bcc0fdfdf9dd`.
-11. The Verify Bridge is not configured on the tenant (`GET /config/v1.0/onpremagents` returns 404 `CSIBS0035E`).
+11. The Verify Bridge is not configured on the tenant (`GET /config/v1.0/onpremagents` returns 404 `CSIBS0035E`). **Correction (UC-11):** `POST` on it returns 401 `CSIBS0033E` even though the admin client holds `manageExternalAgents`. It is an IBM enablement, not a Podman image question.
 
 12. **SMS and voice OTP are blocked** (`429 CSIAP3545E` / `CSIAP3546E` "not supported for this account"). E-mail OTP works. The earlier statement that the SMS config was usable was wrong. (UC-06, 2026-11-10)
 13. **TOTP API works fully** without a phone: enrol, verify (204), replay rejected, windows -1/0/+1, lockout 429 clearing in about 20 s, one enrolment per user. A script can play the authenticator app (`demo/lib/totp.js`).
@@ -103,6 +104,10 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 16. **Languages work without branding:** `ui_locales=fr|en` or `Accept-Language` switches login, TOTP and error pages. With neither, English.
 17. **Consent page shows only `client_name`;** `client_uri`/`policy_uri`/`tos_uri` are ignored. Custom domains: unregistered `Host` gets 400; sender customization off (`CSIAP3564E`).
 18. **One tenant host = one browser session** across brands (Boréal re-asks only the second factor after Aurora). `*.localhost` redirect URIs are accepted by DCR and resolve to loopback.
+19. (Findings 19-22 are from UC-11, 2026-11-11, all `[LIVE]`; details in `DEMO-BUILD-GUIDE.md` 0.1 rows 38-44.) **CSV import:** `POST /v2.0/CSV/importUsers?notifyType=NONE`, multipart field `file`, 202 `{_id}`; poll `GET /v2.0/CSV/jobs/{id}` (not `importStatus`). A blank user name makes the job vanish (404). Existing users are never overwritten (`CSIAI0047E`). Bad e-mail is a per-row error (`CSIAI0096E`). Column `usershouldnotneedtoresetpassword` skips the forced reset (else `CSIAQ0267E` at sign-in). `readUsers` + `manageUsers` is enough. axios here does not take native FormData: the multipart body is hand-built.
+20. **Pre-hashed passwords:** `{SSHA256} {SHA256} {SSHA384} {SHA384} {SSHA512} {SHA512} {SSHA} {SHA} {MD5}` sign in with the original password. `{SMD5}`, `{SHA1}`, `{PBKDF2}`, `{CRYPT}`, `{PLAIN}` and bcrypt import with **no error** but are stored as literal text and cannot sign in: always filter by format. A pre-hashed import skips the 8-character minimum.
+21. **Linkage survives:** `externalId`, enterprise `department` and `employeeNumber`, `preferredLanguage`, custom `accountId`. Working SCIM filters: `externalId` and `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department`; bare `department`/`employeeNumber` give 400 `CSIAI0050E`. Hosted change-password page shows `CSIAH0307I`; posting `operation=verify` completes it. SCIM PATCH `password` works with the no-reset header; re-using the old one gives `CSIAI0021E`.
+22. **App password grant is `ropc`** in the application document (not `password`). **JIT gateway pattern works**: password grant first, legacy store only for users unknown to Verify, create user with the verified plaintext. First login about 1.5 to 2.2 s, then 0.2 to 0.3 s. It is IFC's code, not a Verify feature.
 - `demo/lib/verify.js` loads `.env` from the repo root by path, so demo scripts work from any cwd.
 
 ## 6. Verdicts (15 use cases)
@@ -110,14 +115,14 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 | Verdict | Use cases |
 |---|---|
 | YES | 02, 06, 07, 09, 13, 14, 15 |
-| YES with caveats | 01, 03, 04, 08, 11 |
+| YES with caveats | 01, 03, 04, 08, 11 (bulk yes; JIT only as a gateway pattern until IBM enables Flow or Bridge) |
 | PARTIAL | 05, 10, 12 |
 
-Updated by live findings: **UC-10 is PARTIAL, built** (policy, language, per-brand customers and delegated admin proven; brand look blocked by branding, custom domains need IBM; no sub-tenants). **UC-01 Track B and UC-11 JIT are blocked** (no Flow designer). **UC-05 needs IBM** to activate threat detection and Adaptive access. **UC-12** is Verify plus an external engine (OpenFGA), not a native Verify feature.
+Updated by live findings: **UC-10 is PARTIAL, built** (policy, language, per-brand customers and delegated admin proven; brand look blocked by branding, custom domains need IBM; no sub-tenants). **UC-11 is PARTIAL, built** (bulk, reset, rollback, linkage and a gateway JIT proven; native JIT blocked: no Flow designer, Bridge create returns 401 `CSIBS0033E`). **UC-01 Track B is blocked** (no Flow designer). **UC-05 needs IBM** to activate threat detection and Adaptive access. **UC-12** is Verify plus an external engine (OpenFGA), not a native Verify feature.
 
 ## 7. Blockers and open questions
 
-**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06), and **a client-certificate (mTLS) option on the SaaS edge** (new, from UC-09: without it mTLS client authentication cannot be demonstrated on this tenant). Also ask IBM to confirm: multiple custom IdP domains, per-brand partitioning of users and admins (owners can read all users), per-brand sender domain, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
+**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06), and **a client-certificate (mTLS) option on the SaaS edge** (new, from UC-09: without it mTLS client authentication cannot be demonstrated on this tenant). For UC-11 ask IBM to enable **Flow designer or the Verify Bridge** (create returns 401 `CSIBS0033E`), confirm the supported password-hash prefixes officially (live: `{SSHA256} {SHA256} {SSHA384} {SHA384} {SSHA512} {SHA512} {SSHA} {SHA} {MD5}`; others import silently but cannot sign in), give bulk-import limits, and supply a financial-services migration reference. Also ask IBM to confirm: multiple custom IdP domains, per-brand partitioning of users and admins (owners can read all users), per-brand sender domain, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
 
 **The human must do** (checklist in `DEMO-BUILD-GUIDE.md` section 3):
 - Install the IBM Verify app on 1–2 phones (UC-04, 06, 07, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
@@ -127,17 +132,18 @@ Updated by live findings: **UC-10 is PARTIAL, built** (policy, language, per-bra
 - **UC-08 browser path:** `node demo/uc08-sso/setup.js && node demo/uc08-sso/serve.js`, sign in at http://localhost:4001 as `ifc-demo-uc08-broker` (password `users.broker.password`, TOTP key `totp.secret` in `demo/out/uc08.state.json`), open :4002 and :4003, log out of one. Back-channel: tunnel to :4001, then `node demo/uc08-sso/setup.js --backchannel https://<public>`.
 - Run `mkcert -install` and add `127.0.0.1 ifc-demo.local` to `/etc/hosts` (UC-02).
 - Provide a readable test mailbox (UC-01, 03, 06, 14).
-- Decide whether Podman may pull the OpenFGA and Verify Bridge images (UC-11, 12). Podman is at `/opt/podman/bin/podman`. Docker is not installed. Node is v24.7.0. Go is not installed.
+- **UC-11 browser pass (10 min):** `node demo/uc11-migration/setup.js && node demo/uc11-migration/serve.js`, open `http://localhost:4051`, sign in as `ifc-demo-uc11-jean` (password in `demo/out/uc11.state.json`, `users.jean.password`; first login migrates), then `node demo/uc11-migration/bulk.js` and `http://localhost:4051/portal-login` as `ifc-demo-uc11-rene` to choose a new password. Ask IFC for its legacy hash algorithm, user and broker counts, and e-mail uniqueness.
+- Decide whether Podman may pull the OpenFGA image (UC-12; the Verify Bridge is an IBM enablement, not a Podman matter). Podman is at `/opt/podman/bin/podman`. Docker is not installed. Node is v24.7.0. Go is not installed.
 
-**Unconfirmed (don't promise until tested):** whether IBM can enable a client-certificate (mTLS) option (today the handshake sends no `CertificateRequest`); two IBM Verify authenticators for one user; `client360_id` appearing in the ID token via claim mapping; the passkey method URN in policies; attaching an external SMS webhook; which hash prefixes CSV import supports (doc shows `{SSHA256}`); `X-Forwarded-For` being honoured at the SaaS edge.
+**Unconfirmed (don't promise until tested):** whether IBM can enable a client-certificate (mTLS) option (today the handshake sends no `CertificateRequest`); two IBM Verify authenticators for one user; `client360_id` appearing in the ID token via claim mapping; the passkey method URN in policies; attaching an external SMS webhook; the official list of CSV hash prefixes (nine proven live, finding 20); `X-Forwarded-For` being honoured at the SaaS edge.
 
 ## 8. What to start building next
 
-**Foundation, UC-06, UC-07, UC-08, UC-09 and UC-10 are done (UC-06, UC-07, UC-08 and UC-10 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-06, UC-07, UC-08, UC-09, UC-10 and UC-11 are done (UC-06, 07, 08, 10 and 11 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
 1. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
 2. **UC-13, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 is built and verified**: do not assert an `act` claim (the exchanged token has none, finding 20) and do not claim mTLS (finding 6). UC-09 reuses `ensureStsClient`, `ensureDcrClient` and `oauthClient().exchange` from `demo/lib`.
-3. **UC-02, UC-04** (need browser or phone), then **UC-12, UC-11 bulk, UC-05** (blocked or partial). **UC-10 human steps:** `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`, open `http://aurora.localhost:4101` and `http://boreal.localhost:4102` (steps in `demo/uc10-brands/README.md`); once IBM enables branding run `node demo/uc10-brands/themes.js`.
+3. **UC-02, UC-04** (need browser or phone), then **UC-12, UC-05** (blocked or partial). UC-11 is built: `node demo/uc11-migration/{setup,run,verify,teardown}.js`; live demo = `serve.js` + `show.js` + `bulk.js` + `rollback.js`. **UC-10 human steps:** `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`, open `http://aurora.localhost:4101` and `http://boreal.localhost:4102` (steps in `demo/uc10-brands/README.md`); once IBM enables branding run `node demo/uc10-brands/themes.js`.
 4. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
 Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `oauthClient` for introspect/revoke/exchange/password grant, `send` with DNS retry, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `updateApplication`, `ensureGroupMember`, `ensurePolicy`, `deleteUser`, and from UC-10 `appIdOf`, `listAppEntitlements`, `ensureAppEntitlement`, `removeAppEntitlement`...), `demo/lib/totp.js` (`totpPlayer`), `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients and branding themes named `ifc-demo-*`; extend `inventory()` if a new object type appears). **`teardown-all.js` also deletes other use cases' objects**: re-run their `setup.js` afterwards.

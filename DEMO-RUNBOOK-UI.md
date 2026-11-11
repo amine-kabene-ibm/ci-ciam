@@ -36,7 +36,7 @@
 | 08 | SSO and global logout | **READY NOW** for the scripted terminal path (37/37 `[LIVE]`) / NEEDS HUMAN SETUP for the real browser and back-channel (tunnel) | Browser with 3 stub apps on :4001-4003, terminal, admin console | Idle/absolute session policy has no API (confirmed); admin session kill leaves an app that trusts its own cookie signed in; back-channel delivery not yet executed |
 | 09 | API security | **READY NOW** for the scripted terminal path (25/25 `[LIVE]`, `verify.js` PASS) / admin console is a short look | Terminal (`run.js`), admin console (applications, auth methods) | No `act` claim on the exchanged token; `actorCriteria` not enforced; mTLS not demonstrated: the tenant TLS edge does not request a client certificate (no `CertificateRequest` in the handshake, TLS 1.2 and 1.3 `[LIVE]`), so the demo uses `private_key_jwt` and DPoP |
 | 10 | Per-brand login | **PARTIAL NOW**: policy, language, per-brand customers and per-brand administrators scripted 49/49 `[LIVE]`; brand look and custom domains NEED IBM | Browser with 2 brand portals on `aurora.localhost:4101` / `boreal.localhost:4102`, terminal, admin console (applications, owners) | Branding refused on the trial (403 `CSIAZ3060E`): Verify pages stay IBM-styled, only the language switches; custom IdP domains not available; brand admin cannot change policy and can read all users; no sub-tenants |
-| 11 | Legacy migration | NEEDS BUILD (bulk) / NEEDS IBM (JIT) | Terminal, login page, admin console | JIT needs Flow designer or Bridge |
+| 11 | Legacy migration | PARTIAL NOW (bulk, reset, rollback and JIT-pattern scripted 52/52 [LIVE]) | Terminal, login page, admin console | Native JIT needs Flow designer or Bridge (IBM); browser pass is a human step |
 | 12 | ReBAC | NEEDS BUILD | Gateway stub UI/terminal | Not a Verify-native feature: Verify + OpenFGA |
 | 13 | Broker lifecycle, immediate revocation | PARTIAL NOW (admin console deactivate) / NEEDS BUILD (timed script) | Admin console, demo app, terminal | Webhook delivery needs a public tunnel |
 | 14 | CIBA agent-initiated | NEEDS BUILD + human mailbox/phone | Agent page, caller's email/phone | Approval is a real human action |
@@ -414,20 +414,28 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-11: Legacy IAM migration
 
-**Readiness:** NEEDS BUILD (bulk). JIT NEEDS IBM (Flow designer or Verify Bridge).
+**Readiness:** PARTIAL NOW. Built and verified by script against the real tenant: 52/52 checks (`demo/out/uc11.json`), `verify.js` 11 PASS / 0 FAIL / 5 HUMAN `[LIVE]`. Native JIT (Flow designer or Verify Bridge) NEEDS IBM. The browser pass below is `[HUMAN]`.
 
-**Prerequisites:** `stubs/legacy-auth-store`; CSV with hashed passwords; supported hash prefix confirmed.
+**Prerequisites:** `node demo/uc11-migration/setup.js` (idempotent; the platform starts empty). Passwords are in `demo/out/uc11.state.json`, key `users.<name>.password`: never show that file on screen. Three shells: `node demo/uc11-migration/serve.js` (legacy store :4050 and gateway :4051), `node demo/uc11-migration/show.js`, `node demo/uc11-migration/bulk.js`.
 
 **Click path**
-1. Terminal: show the legacy store with users and hashes.
-2. Run `demo/uc11-migration/bulk.js`: imports the CSV into Verify.
-3. Admin console → Directory → Users: imported users.
-4. Customer window → sign in with the **original password** of a migrated user: success. No reset required.
-5. (JIT, once available) Sign in as a user not yet migrated; the Bridge/Flow verifies against the legacy store and creates the user.
+1. Terminal: `show.js`. Legacy store has 11 fictional people in 6 hash formats, Verify has none ("day before cut-over").
+2. Terminal: `bulk.js`. It extracts, filters by hash format, builds the CSV and calls `POST /v2.0/CSV/importUsers`. Show the job report (rows imported, rows rejected) `[LIVE]`.
+3. Terminal: `show.js` again. Migrated users appear with their linkage (legacy id, policy account, brokerage, broker id).
+4. Admin console → Directory → Users: the imported users.
+5. Browser `http://localhost:4051`: sign in as `ifc-demo-uc11-marie` with the **original legacy password**. Success, no reset `[LIVE]` (scripted; browser pass `[HUMAN]`).
+6. JIT: same page, sign in as `ifc-demo-uc11-jean` (not bulk-migrated). First login takes about 2 s: Verify refuses, the gateway checks the legacy store and creates the user. Sign in again: about 0.3 s, no legacy call. `show.js` confirms `[LIVE]`.
+7. Forced reset: open `http://localhost:4051/portal-login`, sign in as `ifc-demo-uc11-rene` (imported with reset): the Verify page "Change the initial password" appears; choose a new password `[LIVE]` (protocol scripted; screen `[HUMAN]`).
+8. Switch-off: `curl -X POST http://127.0.0.1:4050/_admin/offline -H 'content-type: application/json' -d '{"offline":true}'`. Migrated users still sign in. An un-migrated user gets "temporarily unavailable", not "wrong password". Set `false` to restore.
+9. Rollback: `node demo/uc11-migration/rollback.js`. Verify users deleted, legacy store untouched, customers keep signing in on the legacy path and the bulk run can be repeated.
 
-**Talk track:** "Bulk for the bulk, JIT for the long tail. Customers never reset passwords."
+**Talk track:** "Bulk for the bulk, JIT for the long tail. Customers keep their password; the rollback is one script because the legacy store is never changed. The link to policy and brokerage records travels with the user: external id, account id, department, broker id."
 
-**Honest limitation:** Supported hash types are unconfirmed beyond `{SSHA256}`. Flow designer and Bridge are not available yet.
+**Honest limitation, state clearly:**
+- The JIT is a **gateway pattern IFC would own** in front of Verify, not a Verify feature on this tenant. Native JIT needs Flow designer (403 `CSIBZ0098E`) or the Verify Bridge (create 401 `CSIBS0033E`): IBM enablement `[LIVE]`.
+- IFC's legacy hash algorithm is unknown; the store is a stub. Only these prefixes sign in after import: `{SSHA256} {SHA256} {SSHA384} {SHA384} {SSHA512} {SHA512} {SSHA} {SHA} {MD5}`. `{SMD5}`, `{SHA1}`, PBKDF2, bcrypt, crypt and plain import with no error but cannot sign in, so filter first `[LIVE]`. IBM must confirm the list officially `[HUMAN]`.
+- Scale is untested (11 records). A comparable financial-services migration reference is an IBM / sales item `[HUMAN]`.
+- An import never overwrites an existing user.
 
 ---
 
