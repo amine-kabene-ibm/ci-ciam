@@ -418,6 +418,8 @@ Each section: **Verdict, what Verify provides, what we build (API/CLI only), the
 
 **Verdict: PARTIAL**
 
+> **Update 2026-11-11 (built and tested live, see `DEMO-BUILD-GUIDE.md` UC-10 and `demo/uc10-brands/README.md`).** Branding is refused on the trial (403 `CSIAZ3060E`), so themes are built but not applied. Gap 2 below is **corrected**: application owners give delegated admin scoped per application `[LIVE]` (limits: no policy/theme change, owners can read all users). Gap 3: sub-tenants are reseller-only (405). Languages work today via `ui_locales` / `Accept-Language` `[LIVE]`.
+
 **Provided natively**
 - **Themes:** register via `POST /v1.0/branding/themes` (multipart zip, `configuration`), list/update/delete; templates per locale `[API]`. This repo already ships a 596-file theme zip with 13 locales (including `fr`) and a CLI `ci-theme/manage-theme.js` `[CODE]`. French/English are supported.
 - **Per-brand policies and apps:** each brand = its own app + access policy + theme id `[API]`.
@@ -426,8 +428,8 @@ Each section: **Verdict, what Verify provides, what we build (API/CLI only), the
 
 **Gaps (be upfront)**
 1. **Custom IdP domains per brand** (e.g. `login.brandA.ca`): not configurable via API; docs say vanity domains go through IBM sales `[DOCS]`. Multiple custom domains on one tenant is a commercial/feasibility question for IBM.
-2. **Delegated admin per brand (RBAC scoped to a brand's apps/users):** admin entitlements can be granted to users and groups (`grantrevokeadminentitlementtogroup`) `[API]`, but I found nothing that *scopes* them to one brand. `role-delegation` is only for certification campaigns `[DOCS]`.
-3. **Multi-tenancy:** there are `identitysources/subtenants/{subtenantUuid}` endpoints `[API]` suggesting a sub-tenant construct, but I found no guide for it. **Ask IBM** whether sub-tenants provide per-brand isolated admin; treat as unproven.
+2. **Delegated admin per brand (RBAC scoped to a brand's apps/users):** admin entitlements can be granted to users and groups (`grantrevokeadminentitlementtogroup`) `[API]`, but I found nothing that *scopes* them to one brand. `role-delegation` is only for certification campaigns `[DOCS]`. **Corrected `[LIVE]`:** naming a user as `owners` of an application grants role `applicationowners`, and the owner API (`/v1.0/owner/applications`) scopes them to that application and its customers.
+3. **Multi-tenancy:** there are `identitysources/subtenants/{subtenantUuid}` endpoints `[API]` suggesting a sub-tenant construct. **Tested `[LIVE]`:** 405 `CSIAG0746E`, reseller offering only, not available.
 
 **Build**
 1. `setup.js`: create two themes (`ifc-demo-brandA`, `ifc-demo-brandB`) from the existing theme with different logos/colours and EN/FR strings; two apps, two policies (A: password+OTP, B: passkey-first); both in the same directory.

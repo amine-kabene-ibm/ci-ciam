@@ -253,6 +253,38 @@ async function deletePoliciesByPrefix(prefix) {
   return out;
 }
 
+// Who may sign in to an application registered with all_users_entitled:false (UC-10 "one account per brand") [LIVE]:
+// users or groups get an entitlement; everyone else is refused with CSIAQ0279E. Body shape: {additions:[{assignee:{subjectId,subjectType},grantType:'DISC'}]}.
+// Only direct USER entitlements gated a login in testing: a group entitlement was accepted (200) but did not let its members in.
+const appIdOf = async (name) => {
+  const x = (await listApplications()).find((a) => a.name === name);
+  if (!x) throw new Error(`application ${name} not found`);
+  return x._links.self.href.split('/').pop();
+};
+
+async function listAppEntitlements(appId) {
+  const r = await api('GET', `/v1.0/owner/applications/${appId}/entitlements`);
+  if (r.status !== 200) throw new Error(`list entitlements of ${appId}: HTTP ${r.status} cid=${r.cid}`);
+  return r.data.entitlements || [];
+}
+
+async function ensureAppEntitlement(appId, userId) {
+  if ((await listAppEntitlements(appId)).some((e) => e.assignee.subjectId === userId)) return { added: false };
+  const r = await api('POST', `/v1.0/owner/applications/${appId}/entitlements`, {
+    body: { additions: [{ assignee: { subjectId: userId, subjectType: 'user' }, grantType: 'DISC' }] },
+  });
+  if (r.status !== 200) throw new Error(`entitle ${userId} to ${appId}: HTTP ${r.status} cid=${r.cid}`);
+  return { added: true };
+}
+
+async function removeAppEntitlement(appId, userId) {
+  const e = (await listAppEntitlements(appId)).find((x) => x.assignee.subjectId === userId);
+  if (!e) return { removed: false };
+  const r = await api('POST', `/v1.0/owner/applications/${appId}/entitlements`, { body: { deletions: [e.id] } });
+  if (r.status !== 200) throw new Error(`remove entitlement of ${userId} on ${appId}: HTTP ${r.status} cid=${r.cid}`);
+  return { removed: true };
+}
+
 async function ensureDcrClient(name, body, prev) {
   if (!name.startsWith(PREFIX)) throw new Error(`application name must start with ${PREFIX}`);
   if (prev && prev.registrationUri) {
@@ -272,5 +304,5 @@ module.exports = {
   findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix, ensureGroupMember,
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
-  updateApplication, ensurePolicy, deletePoliciesByPrefix,
+  updateApplication, ensurePolicy, deletePoliciesByPrefix, appIdOf, listAppEntitlements, ensureAppEntitlement, removeAppEntitlement,
 };

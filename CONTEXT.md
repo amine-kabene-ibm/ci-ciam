@@ -25,13 +25,14 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | **UC-07 App-to-voice handoff**: `demo/uc07-handoff/` (setup, run, serve, voice, verify, teardown, README), `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `/handoff` in `stubs/voicebot-ccaas` | `demo/uc07-handoff/` | **Built, PARTIAL.** Verify side proven live: 48/48 scenarios (`demo/out/uc07.json`), `verify.js` 21 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser login to the app (2FA policy), push, passkey `[HUMAN]` |
 | **UC-08 SSO and global logout**: `demo/uc08-sso/` (setup, run, serve, verify, teardown, README, browser), `stubs/rp-sso/` | `demo/uc08-sso/` | **Built, PARTIAL.** Verified live: 37/37 scenarios (`demo/out/uc08.json`), `verify.js` 14 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser, back-channel delivery (tunnel), idle/absolute timeouts (no API) `[HUMAN]` |
 | **UC-09 API security**: `demo/uc09-api/` (common, jwt, setup, serve, run, verify, teardown, README), `stubs/ifc-api/` | `demo/uc09-api/` | **Built and VERIFIED.** 25/25 live checks (`demo/out/uc09.json`), `verify.js` PASS, rebuilt from zero after teardown. `private_key_jwt` + DPoP + key rotation + RFC 8693 on-behalf-of (scoped, policyholder-only) proven `[LIVE]`. **mTLS not possible on this tenant** (no client-certificate request in the TLS handshake `[LIVE]`). No `act` claim; `actorCriteria` not enforced `[LIVE]` |
+| **UC-10 Per-brand login**: `demo/uc10-brands/` (common, themes, setup, run, serve, verify, teardown, README), `stubs/brand-portal/` | `demo/uc10-brands/` | **Built, PARTIAL.** 49/49 live checks (`demo/out/uc10.json`), `verify.js` 19 PASS / 0 FAIL / 5 HUMAN, torn down and rebuilt from zero. Proven: per-brand policy, EN/FR pages, per-brand customers (`all_users_entitled:false` + entitlements), delegated admin via application owners. **Not proven:** brand theme (branding 403 `CSIAZ3060E`; ZIPs built, never registered), custom IdP domains (IBM), passkey (human). |
 
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08** and **UC-09** (see section 2). **Everything else is still only described in the build guide:** the other 11 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08**, **UC-09** and **UC-10** (see section 2). **Everything else is still only described in the build guide:** the other 10 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -55,7 +56,7 @@ App `TrustMeInsurance` (callback `http://localhost:3000/oauth/callback`), group 
 Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 
 1. **Flow designer is NOT enabled** (403 `CSIBZ0098E`, feature `CI-49771`). It blocks UC-01 Track B and the flow-based option for UC-11.
-2. **Branding is NOT supported on the trial** (403 `CSIAZ3060E`). The app's custom theme can't be registered, so `/setup` falls back to the default theme. It blocks UC-10 themes and FR/EN.
+2. **Branding is NOT supported on the trial** (403 `CSIAZ3060E`). The app's custom theme can't be registered, so `/setup` falls back to the default theme. It blocks the UC-10 brand look and legal text (FR/EN still works: finding 16).
 3. **Sub-tenants are reseller-only** (405 `CSIAG0746E`), so per-brand tenants are not available.
 4. **Threat detection config exists but is `inactive`.** Adaptive access (Trusteer) is not confirmed. UC-05 depends on IBM enabling both.
 5. **Dynamic client registration works** (`POST /oauth2/register`, `DELETE /oauth2/register/{id}`). `private_key_jwt` with an inline `jwks` was proven end to end (assertion `aud` = `https://trialverify.verify.ibm.com/oauth2/token`). `tls_client_auth` registers, but **mTLS does not work on this host**: the TLS handshake sends no `CertificateRequest`, so no client certificate can be presented (UC-09, 2026-11-10, `[LIVE]`).
@@ -97,6 +98,11 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 - E-mail OTP: the user types the digits **after** the `NNNN-` prefix (`CSIBN0018E` if the prefix is included). 5 attempts max (`CSIBN0080E` on the last).
 - `GET /v1.0/applications` list items give `_links.self.href` (`/appaccess/v1.0/applications/{id}`); DCR clients show up there and are deleted with `DELETE` on that href (200).
 - SCIM filters `sw` and `and` work. Access-policy `search` only supports `=`, `!=`, `contains` on strings (`sw` gives `CSIBI0015E`).
+14. (Findings 14-18 are from UC-10, 2026-11-11, all `[LIVE]`; details in `DEMO-BUILD-GUIDE.md` 0.1 rows 32-37.) **Delegated admin exists per application:** `owners:[userId]` on an app auto-grants `applicationowners`; the owner API (`/v1.0/owner/applications`) shows and manages only their app and its customers. Limits: no policy/theme change, an owner can read all SCIM users and the other brand's customer list, `themedeveloper` is tenant-wide.
+15. **Per-brand customers:** `all_users_entitled:false` + per-user entitlement (`POST /v1.0/owner/applications/{id}/entitlements`). Non-entitled users get `CSIAQ0279E`. **Group entitlements do NOT admit members.**
+16. **Languages work without branding:** `ui_locales=fr|en` or `Accept-Language` switches login, TOTP and error pages. With neither, English.
+17. **Consent page shows only `client_name`;** `client_uri`/`policy_uri`/`tos_uri` are ignored. Custom domains: unregistered `Host` gets 400; sender customization off (`CSIAP3564E`).
+18. **One tenant host = one browser session** across brands (Boréal re-asks only the second factor after Aurora). `*.localhost` redirect URIs are accepted by DCR and resolve to loopback.
 - `demo/lib/verify.js` loads `.env` from the repo root by path, so demo scripts work from any cwd.
 
 ## 6. Verdicts (15 use cases)
@@ -107,11 +113,11 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 | YES with caveats | 01, 03, 04, 08, 11 |
 | PARTIAL | 05, 10, 12 |
 
-Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants). **UC-01 Track B and UC-11 JIT are blocked** (no Flow designer). **UC-05 needs IBM** to activate threat detection and Adaptive access. **UC-12** is Verify plus an external engine (OpenFGA), not a native Verify feature.
+Updated by live findings: **UC-10 is PARTIAL, built** (policy, language, per-brand customers and delegated admin proven; brand look blocked by branding, custom domains need IBM; no sub-tenants). **UC-01 Track B and UC-11 JIT are blocked** (no Flow designer). **UC-05 needs IBM** to activate threat detection and Adaptive access. **UC-12** is Verify plus an external engine (OpenFGA), not a native Verify feature.
 
 ## 7. Blockers and open questions
 
-**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06), and **a client-certificate (mTLS) option on the SaaS edge** (new, from UC-09: without it mTLS client authentication cannot be demonstrated on this tenant). Also ask IBM to confirm: multiple custom IdP domains, delegated admin per brand, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
+**IBM must enable** (copy-paste message in `DEMO-BUILD-GUIDE.md` section 4): Flow designer, User forms, Branding, Adaptive access, activation of Threat detection, **SMS and voice OTP delivery** (new, from UC-06), and **a client-certificate (mTLS) option on the SaaS edge** (new, from UC-09: without it mTLS client authentication cannot be demonstrated on this tenant). Also ask IBM to confirm: multiple custom IdP domains, per-brand partitioning of users and admins (owners can read all users), per-brand sender domain, supported password-hash prefixes for CSV import and the JIT pattern, two IBM Verify authenticators per user, a financial-services migration reference, and external callouts in attribute functions on a paid tenant.
 
 **The human must do** (checklist in `DEMO-BUILD-GUIDE.md` section 3):
 - Install the IBM Verify app on 1–2 phones (UC-04, 06, 07, 14). **UC-06 first:** `node demo/uc06-voice/enroll-phone.js`, scan the QR, then `node demo/uc06-voice/run.js --push`.
@@ -127,14 +133,14 @@ Updated by live findings: **UC-10 is weaker** (branding blocked, no sub-tenants)
 
 ## 8. What to start building next
 
-**Foundation, UC-06, UC-07, UC-08 and UC-09 are done (UC-06, UC-07 and UC-08 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-06, UC-07, UC-08, UC-09 and UC-10 are done (UC-06, UC-07, UC-08 and UC-10 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
 1. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
 2. **UC-13, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 is built and verified**: do not assert an `act` claim (the exchanged token has none, finding 20) and do not claim mTLS (finding 6). UC-09 reuses `ensureStsClient`, `ensureDcrClient` and `oauthClient().exchange` from `demo/lib`.
-3. **UC-02, UC-04** (need browser or phone), then **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
+3. **UC-02, UC-04** (need browser or phone), then **UC-12, UC-11 bulk, UC-05** (blocked or partial). **UC-10 human steps:** `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`, open `http://aurora.localhost:4101` and `http://boreal.localhost:4102` (steps in `demo/uc10-brands/README.md`); once IBM enables branding run `node demo/uc10-brands/themes.js`.
 4. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
-Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `oauthClient` for introspect/revoke/exchange/password grant, `send` with DNS retry, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `updateApplication`, `ensureGroupMember`, `ensurePolicy`, `deleteUser`...), `demo/lib/totp.js` (`totpPlayer`), `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients named `ifc-demo-*`; extend `inventory()` if a new object type appears). **`teardown-all.js` also deletes other use cases' objects**: re-run their `setup.js` afterwards.
+Reuse, do not duplicate: `demo/lib/verify.js` (`api`, `createClient`, `oauthClient` for introspect/revoke/exchange/password grant, `send` with DNS retry, `evidence`, `stateFile`), `demo/lib/idempotent.js` (`ensureUser`, `ensureApiClient`, `ensureGroup`, `ensureTotp`, `ensureStsClient`, `ensureDcrClient`, `updateApplication`, `ensureGroupMember`, `ensurePolicy`, `deleteUser`, and from UC-10 `appIdOf`, `listAppEntitlements`, `ensureAppEntitlement`, `removeAppEntitlement`...), `demo/lib/totp.js` (`totpPlayer`), `demo/teardown-all.js` (it already sweeps users, groups, API clients, applications, access policies and STS clients and branding themes named `ifc-demo-*`; extend `inventory()` if a new object type appears). **`teardown-all.js` also deletes other use cases' objects**: re-run their `setup.js` afterwards.
 Per-use-case folders look like `demo/ucNN-*/` with `setup.js`, `run.js`, `verify.js`, `teardown.js` and a `README.md`. **When a demo is built, update the readiness label in the runbook summary table.**
 
 ### Commands

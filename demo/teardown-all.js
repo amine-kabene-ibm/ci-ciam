@@ -2,7 +2,7 @@
 // Deletes every tenant object whose name starts with "ifc-demo-". Safe to re-run.
 //   node demo/teardown-all.js            delete everything and list what is left
 //   node demo/teardown-all.js --list     only list (dry run)
-// Covers: users, groups, API clients, applications (includes DCR clients), access policies, STS clients.
+// Covers: users, groups, API clients, applications (includes DCR clients), access policies, STS clients, branding themes.
 // Not covered on purpose: objects the base app creates in /setup (TrustMeInsurance, MFAGroup, ...).
 const { api, PREFIX } = require('./lib/verify');
 const idem = require('./lib/idempotent');
@@ -10,7 +10,7 @@ const idem = require('./lib/idempotent');
 const listOnly = process.argv.includes('--list');
 
 async function inventory() {
-  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [] };
+  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [] };
 
   const u = await api('GET', '/v2.0/Users', { query: { filter: `userName sw "${PREFIX}"`, attributes: 'id,userName', count: 200 } });
   inv.users = ((u.data && u.data.Resources) || []).map((x) => ({ id: x.id, name: x.userName }));
@@ -30,6 +30,9 @@ async function inventory() {
 
   const s = await api('GET', '/v1.0/sts/oauth/clients');
   inv.stsClients = ((s.data && s.data.clients) || []).filter((x) => x.clientName.startsWith(PREFIX)).map((x) => ({ id: x.clientId, name: x.clientName }));
+
+  const t = await api('GET', '/v1.0/branding/themes');
+  inv.themes = ((t.data && t.data.themeRegistrations) || []).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
   return inv;
 }
 
@@ -44,6 +47,7 @@ async function main() {
     for (const x of inv.applications) console.log('  delete application', x.name, (await api('DELETE', x.id, { quiet: true })).status);
     for (const x of inv.policies) console.log('  delete policy     ', x.name, (await api('DELETE', `/v5.0/policyvault/accesspolicy/${x.id}`, { quiet: true })).status);
     for (const x of inv.stsClients) console.log('  delete sts client ', x.name, (await api('DELETE', `/v1.0/sts/oauth/clients/${x.id}`, { quiet: true })).status);
+    for (const x of inv.themes) console.log('  delete theme      ', x.name, (await api('DELETE', `/v1.0/branding/themes/${x.id}`, { quiet: true })).status);
     inv = await inventory();
   }
   console.log(`\nObjects named "${PREFIX}*" on the tenant now: ${count(inv)}`);

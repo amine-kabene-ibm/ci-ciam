@@ -14,7 +14,7 @@ const attr = (tag, name) => { const m = tag.match(new RegExp(`${name}\\s*=\\s*("
 const title = (html) => ((html.match(/<title[^>]*>([^<]*)/i) || [])[1] || '').trim();
 
 class Browser {
-  constructor() { this.jars = new Map(); }
+  constructor() { this.jars = new Map(); this.headers = {}; } // headers: extra request headers, e.g. {'Accept-Language': 'fr-CA'} (UC-10)
   jar(origin) { if (!this.jars.has(origin)) this.jars.set(origin, {}); return this.jars.get(origin); }
   cookieNames(origin) { return Object.keys(this.jar(origin)); }
   hasCookie(origin, name) { return !!this.jar(origin)[name]; }
@@ -43,7 +43,7 @@ class Browser {
     for (let i = 0; i < 20; i++) {
       const r = await send({
         method: m, url: u, maxRedirects: 0, validateStatus: () => true, transformResponse: (x) => x, timeout: 20000,
-        headers: { Cookie: this.cookieHeader(u, topOrigin), ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
+        headers: { ...this.headers, Cookie: this.cookieHeader(u, topOrigin), ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
         data: body ? new URLSearchParams(body).toString() : undefined,
       });
       this.store(u, r);

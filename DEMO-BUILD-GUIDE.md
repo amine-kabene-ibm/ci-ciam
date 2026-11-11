@@ -27,7 +27,7 @@ Everything below is tagged by how I know it.
 |---|---|---|
 | 1 | The privileged API client in `.env` works. `client_credentials` returns a token, 7199 s lifetime. It holds **165 entitlements** (all the ones in the plan, plus more). | All API-driven builds can proceed. |
 | 2 | **Flow designer is NOT enabled.** `GET /v1.0/config/models` returns 403 `CSIBZ0098E`: "tenant is not subscribed to this feature: CI-49771". | UC-01 Track B, UC-11 option 2 and every Flow-based option are blocked until IBM enables it. Track A / option 1 paths are used instead. |
-| 3 | **Branding is NOT enabled on the trial.** `POST /v1.0/branding/themes` returns 403 `CSIAZ3060E`: "Trial subscriptions do not support the branding feature." | The demo app's custom theme cannot be registered. The app runs with the `default` theme. **This also blocks UC-10 (per-brand themes and FR/EN) until IBM enables branding.** |
+| 3 | **Branding is NOT enabled on the trial.** `POST /v1.0/branding/themes` returns 403 `CSIAZ3060E`: "Trial subscriptions do not support the branding feature." | The demo app's custom theme cannot be registered. The app runs with the `default` theme. **This blocks the UC-10 brand look and legal text until IBM enables branding** (languages still work: finding 34). |
 | 4 | Dynamic client registration `POST /oauth2/register` works (201) and `DELETE /oauth2/register/{id}` works (204). | UC-15 dynamic client demo is buildable. Also the quickest way to create test clients. |
 | 5 | `private_key_jwt` client registered via DCR with a JWKS; a signed client assertion with `aud = <tenant>/oauth2/token` returned a token. | UC-09 `private_key_jwt` is proven end to end. |
 | 6 | `tls_client_auth` client with certificate-bound access tokens registers fine (201). **The mTLS handshake was tested (UC-09, 2026-11-10): the edge sends no `CertificateRequest`, so no client certificate can be presented on this host [LIVE].** A `curl --cert` to the token endpoint returns 401 `CSIAQ0155E` for a dummy client, which is not a valid mTLS proof. | UC-09 does **not** claim mTLS. It uses `private_key_jwt` and DPoP. Only an IBM-side change (client-certificate edge option) could enable mTLS. |
@@ -56,6 +56,12 @@ Everything below is tagged by how I know it.
 | 29 | Global logout (UC-08): `rplogout?id_token_hint&post_logout_redirect_uri&state` returns an HTML page with one iframe per app (`<rp>/frontchannel-logout?iss&sid`) plus the tenant's own, then auto-submits a status form after 3 s and redirects. **The Verify session is only cleared when that page runs.** Afterwards: sessions `{}`, access token `active:false` at once, refresh `invalid_grant`. `DELETE /v1.0/auth/sessions/{userId}` = 204 and kills tokens at once, but an app trusting its own cookie stays signed in. | Front-channel needs the browser to stay open about 3 s; back-channel is the answer for admin kills. |
 | 30 | ID token carries `acr`, `amr`, `auth_time`, `sid`, `sub`, `iss`, `groupIds`. **Correction to finding 19/UC-07:** only *introspection* lacks `auth_time`/`acr`; the ID token and userinfo have them. `state`/`nonce` need 8+ chars. No session-policy API exists (every candidate path answers with the console login page). | Idle/absolute timeouts cannot be scripted; use per-app `accessTokenExpiry`. |
 | 31 | On-behalf-of scope (UC-09, 2026-11-10): an exchange **without** `scope` returns a token with no scope (the policyholder's `openid` is not carried). An exchange **with** `scope=ifc.policy.read` returns a token carrying exactly that scope. The exchanged token keeps `sub` = policyholder and `client_id` = the partner STS client. Without an actor token the exchange returns 400 CSIAQ5242E. `actorCriteria` (CEL) is stored as `{}` and not enforced: a disallowed actor still gets a token. | UC-09 requests the scope on the exchange and checks the policyholder rule in the API stub. `actorCriteria` is not a control: the API scope and policyholder check are. |
+| 32 | Delegated admin is real, per application (UC-10, 2026-11-11). Setting `owners:[userId]` on an application (GET full document, change, PUT) auto-grants the user the role `applicationowners`. With their own password-grant token the owner calls `/v1.0/owner/applications`: lists only their apps, manages entitlements of their app; another brand's app gives 400 `CSIAD0047` on write and an empty shell on read. Owner PUT accepts only `name` and `provisioning`; no policy or theme change. 403 on `/v1.0/applications`, access policies, group create. **An owner can read the whole SCIM directory and another brand's entitlement list.** | **Corrects the plan ("nothing scopes admin to a brand").** UC-10 capability 1 is demonstrable; state the limits. |
+| 33 | Per-brand customers (UC-10): a DCR client with `all_users_entitled:false` refuses non-entitled users with `CSIAQ0279E` (401, localized). Entitle with `POST /v1.0/owner/applications/{appId}/entitlements` `{additions:[{assignee:{subjectId,subjectType:'user'},grantType:'DISC'}]}`, revoke with `{deletions:[id]}`. **A `group` entitlement is accepted (200) but does not admit the members.** `appId` = numeric tail of `_links.self.href`. | Entitle users one by one; helpers `ensureAppEntitlement` etc. in `demo/lib/idempotent.js`. |
+| 34 | Language works without branding (UC-10): the default Verify pages (login, TOTP, errors) switch with `ui_locales=fr|en` or `Accept-Language` (`fr-CA` gives French). With neither: English. The stock French title is "S'inscrire - IBM Verify". | FR/EN per brand can be shown today; a French-first brand must send `ui_locales=fr`. Look and legal text still need a theme. |
+| 35 | Consent page (`consent_action: always_prompt`) is per application and localized, but shows only `client_name`: `client_uri`, `policy_uri`, `tos_uri` and the description are not shown (UC-10). | Brand consent wording and links need the theme. |
+| 36 | Custom domains (UC-10): a request to the tenant IP with an unregistered `Host` returns 400; `GET /v1.0/identitysources/subtenants` 405; `GET /config/v1.0/email-domain-auth` 400 `CSIAP3564E` ("Sender customization is not enabled"); `/v2.0/tenant/properties` lists only the tenant host. | `idp.brand1.com` cannot be improvised; IBM / sales. Brand portals run on `*.localhost` (DCR accepts those redirect URIs). |
+| 37 | One tenant host means one browser session (UC-10): after Aurora, Boréal asks only its second factor. | Hard isolation between brands needs separate tenants. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -362,21 +368,36 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-10: Per-brand login
 
-**Status:** **Blocked on trial** for themes. Partially buildable otherwise.
+**Status: PARTIAL, built and verified (2026-11-11).** 49/49 live checks pass (`demo/uc10-brands/run.js`), `verify.js` 19 PASS / 0 FAIL / 5 HUMAN, torn down and rebuilt from zero. Per-brand policy, language, per-brand customers and delegated administration are proven. **Brand look (theme), consent wording and custom IdP domains are NOT proven**: branding is refused on the trial and custom domains are an IBM matter.
 
-**What `[LIVE]` told us**
-- Theme registration: **403, branding not supported on trial**.
-- Sub-tenants: **405, reseller-only**.
+**Proven `[LIVE]`**
+- Two brands (fictional Aurora Insurance, Boréal Assurance) = two applications, own client id and redirect host (`aurora.localhost:4101`, `boreal.localhost:4102`), one tenant, one identity: the same `sub` at both.
+- Brand policy: Aurora password only (`login`); Boréal password then the authenticator-app page in French (`login,totp`, "Utiliser une autre méthode").
+- Language: EN and FR on the login, second-factor and error pages via `ui_locales` / `Accept-Language`.
+- Per-brand customers: `all_users_entitled:false` plus per-user entitlement; a non-entitled customer gets `CSIAQ0279E` in French.
+- Delegated admin: each brand's owner sees and manages only their application and its customers (revoke/restore effective at once), is refused on the other brand and on tenant-wide APIs (see finding 32).
+- Theme ZIPs (brand colour, logo, EN/FR labels, legal text, support link) are built offline from `ci-theme/` and inspected. They are READY, not APPLIED.
 
-**Build steps (what we can do now)**
-1. Two apps `ifc-demo-brandA`, `ifc-demo-brandB`, each with its own policy (A: password+OTP, B: passkey-first) and groups.
-2. One user signs in to both (proves one account across brands).
-3. Prepare theme zips for both brands from `ci-theme/` (script `demo/uc10-brands/make-themes.sh` copies the 596-file theme, swaps logo/colours, adds FR strings) so they are ready to upload the moment branding is enabled.
-4. `register-themes.js`: `POST /v1.0/branding/themes` (multipart `configuration`, `files`); will start working once enabled.
+**Not proven / limits `[LIVE]`**
+- Theme registration: 403 `CSIAZ3060E`. The success path was never executed; the Verify pages stay IBM-styled (only the language changes).
+- Custom IdP domains, per-brand sender domain, sub-tenants: unavailable or IBM-only (finding 36).
+- Delegated admin cannot change the brand's policy or theme; owners can read all users and the other brand's customer list; `themedeveloper` is tenant-wide.
+- Group entitlements do not gate sign-in; consent wording needs a theme; one browser has one session across brands.
+- `[INFER]` Registration and recovery pages per brand come from the same themes, so the same enablement applies. Not tested.
 
-**Human steps:** `[HUMAN]` ask IBM to enable **branding** on the trial and to answer: multiple custom IdP domains per tenant; delegated admin scoped per brand.
+**Corrections to the earlier plan `[LIVE]`**
+- "Delegated admin: nothing scopes admin to a brand" was wrong: application owners give per-application scope (with the limits above).
+- "Languages need the theme" was wrong: the default pages localize.
+- `make-themes.sh` / `register-themes.js` became `themes.js` (build + try to register) in `demo/uc10-brands/`; `demo/teardown-all.js` also sweeps themes.
 
-**Open risks:** the three IFC asks (custom domains, scoped admin, multi-tenancy) remain unconfirmed or negative; report honestly.
+**Build (as built):** `demo/uc10-brands/common.js`, `themes.js`, `setup.js` (idempotent), `run.js` (scenarios A-I), `serve.js`, `verify.js`, `teardown.js`, `README.md`. Stub: `stubs/brand-portal/server.js`. Helpers added to `demo/lib/idempotent.js`: `appIdOf`, `listAppEntitlements`, `ensureAppEntitlement`, `removeAppEntitlement`.
+
+**Human steps `[HUMAN]`** (commands in `demo/uc10-brands/README.md`)
+1. Real browser: `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`, open `http://aurora.localhost:4101` and `http://boreal.localhost:4102`, sign in as `ifc-demo-uc10-customer` (password in `demo/out/uc10.state.json` `users.customer.password`, TOTP from `totp.secret`).
+2. Passkey at Boréal: register a passkey in a browser, then sign in at Boréal.
+3. IBM: enable branding, then `node demo/uc10-brands/themes.js`; ask about several custom IdP domains, per-brand sender domain, per-brand partitioning of users and admins.
+
+**Open risks:** the brand look is the visible part of UC-10 and stays IBM-styled until IBM enables branding; custom domains are unconfirmed.
 
 ---
 
@@ -476,6 +497,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 7 | Decide whether Podman images (OpenFGA, Verify Bridge) may be pulled on this machine. | UC-11, UC-12 | 5 min |
 | 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
 | 9 | UC-08 real browser + back-channel: `node demo/uc08-sso/serve.js`, then tunnel and `setup.js --backchannel` (steps in UC-08 above). | UC-08 | 15 min |
+| 10 | UC-10 real browser: `node demo/uc10-brands/serve.js`, open `aurora.localhost:4101` and `boreal.localhost:4102` (steps in UC-10 above). | UC-10 | 5 min |
 
 ## 4. Message to IBM (copy/paste)
 
@@ -485,7 +507,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 > 3. Adaptive access (Trusteer) and activate Threat detection (config is `inactive`).
 > 4. SMS and voice OTP delivery (API returns CSIAP3545E / CSIAP3546E "not supported for this account"); confirm quota and whether a customer SMS gateway can be attached (`external_sms` webhook).
 >
-> Please also confirm: (a) multiple custom IdP domains on one tenant; (b) delegated admin scoped to a subset of users/apps; (c) mTLS client authentication endpoint on SaaS; (d) supported password-hash prefixes for CSV import and the recommended JIT migration pattern; (e) whether one user can register more than one IBM Verify authenticator; (f) a prior financial-services migration reference; (g) the external-callout (HTTP) capability in attribute functions on a paid tenant.
+> Please also confirm: (a) multiple custom IdP domains on one tenant; (b) delegated admin scoped to a subset of users (application owners are scoped per app but can read all users); (c) mTLS client authentication endpoint on SaaS; (d) supported password-hash prefixes for CSV import and the recommended JIT migration pattern; (e) whether one user can register more than one IBM Verify authenticator; (f) a prior financial-services migration reference; (g) the external-callout (HTTP) capability in attribute functions on a paid tenant.
 
 ## 5. Recommended build order (updated by live findings)
 
@@ -493,7 +515,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 2. **UC-13, UC-14, UC-15** (proven or nearly proven). **UC-09 built and verified** (25/25 live; mTLS not possible on this host).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
 4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
-5. **UC-12, UC-11 bulk, UC-05, UC-10** (blocked or partial).
+5. **UC-10 (partial, built; branding and domains need IBM)**, then **UC-12, UC-11 bulk, UC-05** (blocked or partial).
 
 ## 6. Changes made to the repo during this session
 

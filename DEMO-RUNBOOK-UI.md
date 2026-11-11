@@ -35,7 +35,7 @@
 | 07 | App-to-voice handoff | **READY NOW** for the scripted app (terminal, 48/48 `[LIVE]`) / NEEDS HUMAN SETUP for the browser login to the real demo app, push and passkey | Terminal "app + caller", demo app Help page, admin console | Voice and the CCaaS are simulated; browser path and push not yet executed; IFC's own flow text still says "enter the OTP" (confirm) |
 | 08 | SSO and global logout | **READY NOW** for the scripted terminal path (37/37 `[LIVE]`) / NEEDS HUMAN SETUP for the real browser and back-channel (tunnel) | Browser with 3 stub apps on :4001-4003, terminal, admin console | Idle/absolute session policy has no API (confirmed); admin session kill leaves an app that trusts its own cookie signed in; back-channel delivery not yet executed |
 | 09 | API security | **READY NOW** for the scripted terminal path (25/25 `[LIVE]`, `verify.js` PASS) / admin console is a short look | Terminal (`run.js`), admin console (applications, auth methods) | No `act` claim on the exchanged token; `actorCriteria` not enforced; mTLS not demonstrated: the tenant TLS edge does not request a client certificate (no `CertificateRequest` in the handshake, TLS 1.2 and 1.3 `[LIVE]`), so the demo uses `private_key_jwt` and DPoP |
-| 10 | Per-brand login | NEEDS IBM (branding blocked on trial) | Two apps, login page | No sub-tenants (reseller only); themes blocked; delegated admin unconfirmed |
+| 10 | Per-brand login | **PARTIAL NOW**: policy, language, per-brand customers and per-brand administrators scripted 49/49 `[LIVE]`; brand look and custom domains NEED IBM | Browser with 2 brand portals on `aurora.localhost:4101` / `boreal.localhost:4102`, terminal, admin console (applications, owners) | Branding refused on the trial (403 `CSIAZ3060E`): Verify pages stay IBM-styled, only the language switches; custom IdP domains not available; brand admin cannot change policy and can read all users; no sub-tenants |
 | 11 | Legacy migration | NEEDS BUILD (bulk) / NEEDS IBM (JIT) | Terminal, login page, admin console | JIT needs Flow designer or Bridge |
 | 12 | ReBAC | NEEDS BUILD | Gateway stub UI/terminal | Not a Verify-native feature: Verify + OpenFGA |
 | 13 | Broker lifecycle, immediate revocation | PARTIAL NOW (admin console deactivate) / NEEDS BUILD (timed script) | Admin console, demo app, terminal | Webhook delivery needs a public tunnel |
@@ -390,21 +390,25 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-10: Per-brand login
 
-**Readiness:** NEEDS IBM (branding disabled on the trial). Two-app policy difference can be shown now.
+**Readiness:** PARTIAL NOW. Policy, language, per-brand customers and delegated admin work (scripted 49/49 `[LIVE]`). The brand look, legal text and custom domains need IBM (branding disabled on the trial).
 
-**Prerequisites:** Brand A / Brand B apps and policies; IBM to enable branding.
+**Prerequisites:** `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`. Two portals: Aurora Insurance `http://aurora.localhost:4101` (English first, password only) and Boréal Assurance `http://boreal.localhost:4102` (French first, passkey / authenticator-app). Customer `ifc-demo-uc10-customer`; password in `demo/out/uc10.state.json` (`users.customer.password`), TOTP from `totp.secret` (add it to an authenticator app, or print the current code with the one-liner in `demo/uc10-brands/README.md`).
 
 **Click path**
-1. Open Brand A app → login page with brand A look (after branding is enabled), FR/EN switch.
-2. Open Brand B app → different look and a passkey-first policy.
-3. Sign in with one user across both. One identity, two experiences.
+1. Open Aurora, Sign in as the customer: password, straight into the Aurora portal (no second factor).
+2. In a private window open Boréal: French pages, password, then the second-factor page in French ("Utiliser une autre méthode" shows the passkey path). Enter the TOTP. Same `sub` shown in both portals: one identity, two experiences.
+3. Sign in as `ifc-demo-uc10-aurora-only` at Boréal: French refusal (`CSIAQ0279E`). Same user works at Aurora. Per-brand customers.
+4. Admin console, Applications: open `ifc-demo-uc10-aurora` and `-boreal`; the Owners tab shows one brand administrator each. In a terminal show delegated admin: `node demo/uc10-brands/run.js` (scenario F), or the README commands: the Aurora administrator lists only Aurora, revokes a customer and Aurora refuses them at once, and is refused on Boréal.
+5. Show the theme package (`ls -la demo/out/themes/`) as ready, not applied.
 
-**Talk track:** "One identity platform. Brand experience is configuration, not a separate tenant."
+**Talk track:** "One identity platform, several brand experiences. Each brand has its own application, its own policy and language, its own customers and its own administrator who can only touch their brand. The visual theme per brand is packaged and waiting for the branding feature on the tenant."
 
 **Honest limitation, state clearly:**
-- Themes cannot be registered on the trial (403) `[LIVE]`. Until IBM enables branding, show only policy differences.
-- Sub-tenants are reseller-only `[LIVE]`. Per-brand tenancy is not available.
-- Multiple custom domains and delegated admin per brand are unconfirmed. See the IBM message in the build guide.
+- Themes cannot be registered on the trial (403 `CSIAZ3060E`) `[LIVE]`. The Verify pages look IBM-standard today; only the language switches. The theme ZIPs are built but never applied.
+- Custom IdP URLs (`idp.brand1.com`) cannot be improvised on the tenant (unregistered Host gets 400); IBM / sales matter `[LIVE]` `[DOCS]`.
+- Sub-tenants are reseller-only `[LIVE]`. A brand admin cannot change the policy or theme, and can read all users (the directory is not partitioned per brand) `[LIVE]`.
+- Consent wording and legal links per brand need the theme. One browser has one session across brands `[LIVE]`.
+- Passkey at Boréal needs a browser authenticator `[HUMAN]`; the TOTP fallback is proven.
 
 ---
 
