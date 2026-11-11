@@ -486,17 +486,24 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-13: SCIM broker lifecycle and immediate revocation
 
-**Status:** Bob builds it fully. **Core behaviour proven `[LIVE]`.**
+**Status:** **Built and VERIFIED `[LIVE]`.** 18/18 live checks passing (`demo/out/uc13.json`), `verify.js` PASS, torn down and rebuilt from zero.
 
-**Proven:** token issued, introspect `active:true`; `PATCH active=false` (204); token introspect `active:false` within 0 s; new token request fails with `CSIAQ0281E The account is not active`; `DELETE /v1.0/auth/sessions/{id}` returns 204.
+**Proven `[LIVE]`:**
+- SCIM 2.0 user provisioning with enterprise schema (`department`, `employeeNumber`, `title`, `externalId`).
+- In-flight role/department sync via SCIM `PATCH` (HTTP 204).
+- Immediate revocation: SCIM `PATCH active=false` causes existing tokens to introspect `active:false` in **0-1 s** (measured ~440 ms `[LIVE]`).
+- Downstream resource server immediately rejects revoked tokens with HTTP 401 Unauthorized.
+- New token requests immediately fail with HTTP 400 `CSIAQ0281E` ("The account is not active.").
+- Active session kill: `DELETE /v1.0/auth/sessions/{id}` returns HTTP 204.
+- SCIM reactivation: `PATCH active=true` instantly restores login capability (HTTP 200).
+- Operations queue & error triage: failed SCIM operations return standard error codes (404 `CSIAI0070E`, 409 `CSIAI0047E`) with `x-correlation-id` headers, ingested into `stubs/ops-queue`.
+- Webhook management API: `POST /config/v1.0/webhooks/` and `GET /config/v1.0/webhooks/` work natively for event notifications.
 
-**Build steps**
-1. `stubs/ops-queue`: webhook receiver (port 4040) that stores events (success and failure).
-2. Webhook: `POST /config/v1.0/webhooks/` for notification events (purpose `notifications`); needs a public URL (tunnel) `[HUMAN]` for a real delivery. List with `GET /config/v1.0/webhooks/` (`{"webhooks":[]}` `[LIVE]`).
-3. `demo/uc13-lifecycle/run.js`: create broker (SCIM) → get token (DCR password client) → deactivate (PATCH) → measure time to first `active:false` and first rejected login → write `demo/out/uc13.json`.
-4. Failure path: PATCH a non-existent id; confirm the error goes to the ops-queue stub.
+**Components:**
+- `stubs/ops-queue/server.js`: Operations Queue stub & interactive operator dashboard on port 4040.
+- `demo/uc13-lifecycle/`: `common.js`, `setup.js`, `serve.js`, `run.js`, `verify.js`, `teardown.js`, `README.md`.
 
-**Human steps:** `[HUMAN]` browser session shown being killed (optional); tunnel.
+**Human steps:** `[HUMAN]` Webhook delivery to a local development machine requires a public tunnel (ngrok / cloudflared).
 
 ---
 

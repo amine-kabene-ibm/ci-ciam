@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-11 (UC-12 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-11 (UC-13 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -29,12 +29,13 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | **UC-11 Legacy migration**: `demo/uc11-migration/` (common, setup, bulk, rollback, run, serve, show, verify, teardown, README), `stubs/legacy-auth-store/`, `stubs/migration-gateway/` | `demo/uc11-migration/` | **Built, PARTIAL.** 52/52 live checks (`demo/out/uc11.json`), `verify.js` 11 PASS / 0 FAIL / 5 HUMAN, torn down and rebuilt from zero. Proven: CSV bulk import keeping the original password, hash-format matrix, forced reset, linkage attributes kept, rollback, least-privilege migrator, and a **gateway JIT pattern** (IFC would own it). **Not proven:** native JIT (Flow designer 403, Bridge create 401 `CSIBS0033E`: IBM), real browser pass (human), IFC's real hash algorithm, scale (11 records), prior-migration reference. |
 
 | **UC-12 ReBAC**: `demo/uc12-rebac/` (common, runtime, setup, run, serve, cli, verify, teardown, README), `stubs/rules-engine/` (OpenFGA launcher + model), `stubs/policy-api/` (source-system stub, gateway, console UI) | `demo/uc12-rebac/` | **Built, PARTIAL.** 53/53 live checks (`demo/out/uc12.json`), `verify.js` 16 PASS / 0 FAIL / 4 HUMAN, torn down and rebuilt from zero. Proven: real sign-in + introspection with an STS client, inherited access (brokerage → broker → client → policy) with reasoning path, reassignment with the SAME token (200 → 403, no re-login), leave / transfer, list-objects and list-users, audit log, deactivation wins (401), engine == independent oracle on all 30 cells, 8,120-relationship smoke test. **Not proven:** the PDF's token-minting callout (impossible here: built-in attribute functions only), a human look at the browser console, IFC's real roles / source / volume. Not Verify-native: OpenFGA is a stand-in. |
+| **UC-13 Broker lifecycle, immediate revocation**: `demo/uc13-lifecycle/` (common, setup, run, serve, verify, teardown, README), `stubs/ops-queue/` (event store & webhook receiver, dashboard UI on `:4040`) | `demo/uc13-lifecycle/` | **Built and VERIFIED `[LIVE]`.** 18/18 live checks (`demo/out/uc13.json`), `verify.js` PASS, torn down and rebuilt from zero. Proven: SCIM 2.0 user provisioning with enterprise attributes (`department`, `employeeNumber`, `title`, `externalId`), in-flight role update via SCIM PATCH (204), **immediate revocation** (`PATCH active=false` causes existing token introspection `active:false` in 0-1s, ~440ms `[LIVE]`), downstream API rejects with 401, new login rejected (`CSIAQ0281E`), active session kill (`DELETE /v1.0/auth/sessions/{id}` = 204), SCIM reactivation (`PATCH active=true`), ops queue error logging with correlation IDs (404 `CSIAI0070E`, 409 `CSIAI0047E`), native webhook configuration API. **Not proven:** real-time SaaS-to-local webhook delivery without a public tunnel (`[HUMAN]`). |
 
 Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from documentation, `[INFER]` reasoning, `[HUMAN]` a person must do it.
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08**, **UC-09**, **UC-10**, **UC-11** and **UC-12** (see section 2). **Everything else is still only described in the build guide:** the other 8 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08**, **UC-09**, **UC-10**, **UC-11**, **UC-12**, and **UC-13** (see section 2). **Everything else is still only described in the build guide:** the other 7 use cases, the agent pages (`/agent`, `/agent/verify`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -144,10 +145,10 @@ Updated by live findings: **UC-10 is PARTIAL, built** (policy, language, per-bra
 
 ## 8. What to start building next
 
-**Foundation, UC-06, UC-07, UC-08, UC-09, UC-10, UC-11 and UC-12 are done (UC-06, 07, 08, 10, 11 and 12 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-06, UC-07, UC-08, UC-09, UC-10, UC-11, UC-12 and UC-13 are done (UC-06, 07, 08, 10, 11, 12 and 13 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
 1. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
-2. **UC-13, UC-14, UC-15** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-09 is built and verified**: do not assert an `act` claim (the exchanged token has none, finding 20) and do not claim mTLS (finding 6). UC-09 reuses `ensureStsClient`, `ensureDcrClient` and `oauthClient().exchange` from `demo/lib`.
+2. **UC-14 CIBA, UC-15 Consent** (proven or nearly proven), then UC-01 Track A, UC-03. **UC-13 is built and verified**: `node demo/uc13-lifecycle/{setup,run,verify,teardown}.js`; live demo = `serve.js` on `http://localhost:4040`.
 3. **UC-02, UC-04** (need browser or phone), then **UC-05** (needs IBM). UC-12 is built: `node demo/uc12-rebac/{setup,run,verify,teardown}.js`; live demo = `serve.js` then `http://127.0.0.1:4170` or `cli.js`. UC-11 is built: `node demo/uc11-migration/{setup,run,verify,teardown}.js`; live demo = `serve.js` + `show.js` + `bulk.js` + `rollback.js`. **UC-10 human steps:** `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`, open `http://aurora.localhost:4101` and `http://boreal.localhost:4102` (steps in `demo/uc10-brands/README.md`); once IBM enables branding run `node demo/uc10-brands/themes.js`.
 4. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
@@ -165,10 +166,13 @@ node demo/uc07-handoff/setup.js && node demo/uc07-handoff/run.js && node demo/uc
 node demo/uc08-sso/setup.js && node demo/uc08-sso/verify.js     # then: node demo/uc08-sso/serve.js for the browser demo
 node demo/uc09-api/setup.js && node demo/uc09-api/serve.js &    # then, in another shell: node demo/uc09-api/run.js && node demo/uc09-api/verify.js
 node demo/uc09-api/teardown.js                                  # removes all ifc-demo-uc09-* objects
+node demo/uc13-lifecycle/setup.js && node demo/uc13-lifecycle/run.js && node demo/uc13-lifecycle/verify.js
+node demo/uc13-lifecycle/serve.js                               # interactive Ops Queue dashboard on :4040
+node demo/uc13-lifecycle/teardown.js                            # removes all ifc-demo-uc13-* objects
 ```
 
 ### Suggested first prompt for the next session
-> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2 and the UC-13 parts. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then build UC-13 end to end reusing `demo/lib` (and `ensureStsClient` / `oauthClient` for token work). Write evidence to `demo/out/uc13.json`. Don't print `.env` values.
+> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2 and the UC-14 parts. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then build UC-14 end to end reusing `demo/lib`. Write evidence to `demo/out/uc14.json`. Don't print `.env` values.
 
 ## 9. Tooling that was used and may no longer exist (outside the repo)
 

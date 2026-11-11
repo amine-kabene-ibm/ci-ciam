@@ -38,7 +38,7 @@
 | 10 | Per-brand login | **PARTIAL NOW**: policy, language, per-brand customers and per-brand administrators scripted 49/49 `[LIVE]`; brand look and custom domains NEED IBM | Browser with 2 brand portals on `aurora.localhost:4101` / `boreal.localhost:4102`, terminal, admin console (applications, owners) | Branding refused on the trial (403 `CSIAZ3060E`): Verify pages stay IBM-styled, only the language switches; custom IdP domains not available; brand admin cannot change policy and can read all users; no sub-tenants |
 | 11 | Legacy migration | PARTIAL NOW (bulk, reset, rollback and JIT-pattern scripted 52/52 [LIVE]) | Terminal, login page, admin console | Native JIT needs Flow designer or Bridge (IBM); browser pass is a human step |
 | 12 | ReBAC | **PARTIAL NOW**: scripted 53/53 `[LIVE]`, `verify.js` 16 PASS / 0 FAIL / 4 HUMAN; browser look is a human step | Gateway console in a browser (`127.0.0.1:4170`) or terminal (`cli.js`), admin console (users) | Not a Verify-native feature: Verify authenticates, OpenFGA (open source, stand-in) authorizes; the "IdP calls the rules engine while minting the token" variant is not possible on this tenant (built-in attribute functions only) |
-| 13 | Broker lifecycle, immediate revocation | PARTIAL NOW (admin console deactivate) / NEEDS BUILD (timed script) | Admin console, demo app, terminal | Webhook delivery needs a public tunnel |
+| 13 | Broker lifecycle, immediate revocation | **READY NOW**: scripted 18/18 `[LIVE]`, `verify.js` PASS; interactive ops queue dashboard on `:4040` (`serve.js`) | Admin console (users, events), terminal (`run.js`), ops queue UI (`:4040`) | Webhook delivery from SaaS to local environment needs a public tunnel (`[HUMAN]`) |
 | 14 | CIBA agent-initiated | NEEDS BUILD + human mailbox/phone | Agent page, caller's email/phone | Approval is a real human action |
 | 15 | Consent (PIPEDA) | PARTIAL NOW (comm. prefs, consent history, download, delete) / NEEDS BUILD (third parties, expiry, DSAR) | Demo app, admin console | DSAR SLA tracking is the stub's job, not Verify's |
 
@@ -471,22 +471,27 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-13: SCIM broker lifecycle and immediate revocation
 
-**Readiness:** PARTIAL NOW. Admin console deactivate works today; the timed script and webhook are NEEDS BUILD. The core behaviour was proven `[LIVE]`.
+**Readiness:** **READY NOW** (scripted 18/18 `[LIVE]`, `verify.js` PASS, interactive dashboard on `:4040`).
 
-**Prerequisites:** a test broker user; the DCR password client for the script; optional tunnel for webhook.
+**Prerequisites:** run `node demo/uc13-lifecycle/setup.js`. Optional tunnel for real SaaS-to-local webhook delivery.
 
-**Click path**
-1. Customer window → sign in as the broker → open a profile page (session active).
-2. Admin console (or SCIM script) → deactivate the broker.
-3. Customer window → refresh. Access is lost. A new sign-in shows "The account is not active".
-4. Terminal: `run.js` prints the timeline: token active → PATCH → introspect `active:false` in 0 s → login rejected.
-5. Failure path: PATCH a nonexistent id; the ops-queue stub receives the failure event.
+**Click path (Presenter & UI Walkthrough)**
+1. **Terminal:** `node demo/uc13-lifecycle/serve.js` -> open `http://localhost:4040` (IFC Operations Queue & Broker Lifecycle Hub).
+2. **Terminal:** `node demo/uc13-lifecycle/run.js` -> runs all 18 live scenarios:
+   - Broker Elena Vance provisioned via SCIM with enterprise extension attributes (`department`, `title`, `employeeNumber`, `externalId`).
+   - Elena signs in (password grant) -> gets access token and ID token -> introspects `active:true`.
+   - In-flight SCIM `PATCH` updates role/department to "Specialty Risks" -> directory immediately updates.
+   - **Immediate Revocation:** SCIM `PATCH active=false` runs -> token introspects `active:false` in **under 1s** (`[LIVE]`), downstream API rejects with 401, new login rejected with `CSIAQ0281E`, active sessions terminated via `DELETE /v1.0/auth/sessions/{id}`.
+   - **Reactivation:** SCIM `PATCH active=true` -> login immediately succeeds again.
+   - **Ops Queue Error Handling:** Non-existent user (404 `CSIAI0070E`) and duplicate user (409 `CSIAI0047E`) logged with correlation IDs.
+3. **Verify Admin Console:** Directory > Users > check Elena Vance status (Active / Inactive) and Events log showing deactivation and blocked login.
+4. **Ops Queue UI (`http://localhost:4040`):** Review live event queue, deactivation latency metrics, error triage items with correlation IDs.
 
-**Talk track:** "Offboarding a broker in the broker system calls SCIM. Access ends in the same second, including tokens already issued."
+**Talk track:** "Offboarding or transferring a broker in IFC's source system fires SCIM 2.0. Access terminates in the exact same second across issued tokens and active sessions, while any provisioning errors are routed to the operations queue with correlation IDs for instant triage."
 
-**Show in admin console:** the user status, events (deactivation, rejected login).
+**Show in admin console:** User status, enterprise attributes, audit events (deactivation, rejected login).
 
-**Honest limitation:** Webhook delivery to a local stub needs a public tunnel.
+**Honest limitation:** Real-time Webhook delivery from SaaS tenant to a local developer machine requires a public tunnel (`[HUMAN]`).
 
 ---
 

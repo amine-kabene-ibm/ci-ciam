@@ -300,9 +300,55 @@ async function ensureDcrClient(name, body, prev) {
   };
 }
 
+// Webhook management (/config/v1.0/webhooks/)
+async function listWebhooks() {
+  const r = await api('GET', '/config/v1.0/webhooks/', { quiet: true });
+  return ((r.data && r.data.webhooks) || []);
+}
+
+async function findWebhook(name) {
+  const list = await listWebhooks();
+  return list.find((w) => w.name === name) || null;
+}
+
+async function ensureWebhook(name, { type = 'notification', purpose = ['notifications'], urls = ['https://example.com/webhook'], notification } = {}) {
+  if (!name.startsWith(PREFIX)) throw new Error(`webhook name must start with ${PREFIX}`);
+  let existing = await findWebhook(name);
+  if (existing) {
+    return { id: existing.id, webhook: existing, created: false };
+  }
+  const body = {
+    name,
+    type,
+    purpose,
+    urls,
+    ...(type === 'notification' ? {
+      notification: notification || {
+        enabled: true,
+        interests: [{ name: 'user', clauses: [{ operation: 'include', key: 'action', value: '*' }] }],
+      },
+    } : {}),
+  };
+  const c = await api('POST', '/config/v1.0/webhooks/', { body, quiet: true });
+  if (c.status !== 200 && c.status !== 201) throw new Error(`ensureWebhook ${name}: HTTP ${c.status} cid=${c.cid}`);
+  return { id: c.data.id, webhook: c.data, created: true };
+}
+
+async function deleteWebhooksByPrefix(prefix) {
+  const list = await listWebhooks();
+  const out = [];
+  for (const w of list) {
+    if (!w.name.startsWith(prefix)) continue;
+    const d = await api('DELETE', `/config/v1.0/webhooks/${w.id}`, { quiet: true });
+    out.push({ name: w.name, status: d.status });
+  }
+  return out;
+}
+
 module.exports = {
   findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix, ensureGroupMember,
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
   updateApplication, ensurePolicy, deletePoliciesByPrefix, appIdOf, listAppEntitlements, ensureAppEntitlement, removeAppEntitlement,
+  listWebhooks, findWebhook, ensureWebhook, deleteWebhooksByPrefix,
 };
