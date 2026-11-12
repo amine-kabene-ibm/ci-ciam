@@ -74,6 +74,10 @@ Everything below is tagged by how I know it.
 | 47 | **No token-time callout and no custom attribute source on this tenant (UC-12):** `GET /v1.0/attributefunctions` lists 13 built-ins only (`uppercase`, `lowercase`, `base64Encode/Decode`, `encodeURI*`, `decodeURI*`, `generateUuidIfNull`, `currentTimeInSeconds/Milliseconds`, `sha256`, `sha512`); `POST` on it is 405 `CSIAK4305E`. `POST /v1.0/attributes` accepts only source types `STATIC, CREDENTIAL, SCHEMA, PROFILE, ORG` (400 `CSIBE2716E`); `rule` is deprecated (400 `CSIBE2758E`). Putting `tokenResponseMap` in the application's `oidc.properties` is refused (400); no other placement was tried. | The PDF's "IdP calls the rules engine while minting the token" cannot be shown here. Say so; the request-time pattern is the demo. Whether `tokenResponseMap`/`introspectResponseMap` exist elsewhere in the model is `[INFER]` unproven. |
 | 48 | **A relationship model that survives "a broker who leaves" (UC-12):** `servicing = placed_by and member from brokerage` (an intersection) means the placing broker keeps access only while still a live member of the client's brokerage; deleting one membership tuple removes access on the next check, without touching client records. `viewer = servicing or manager from brokerage`; `editor = servicing` (a policy choice). OpenFGA v1.22.1 supports `list-objects` and `list-users` (the "all resources a user can access" and "who can access" asks). 8,120 relationships loaded in ~0.8 s; check ~1 to 6 ms, list-objects ~1 to 2 ms on this laptop, in memory (a hint, not a benchmark). | The model is in `stubs/rules-engine/model.js`. IFC's real roles and volumes are unknown. |
 | 49 | **CIBA end to end (UC-14, 2026-11-12):** app settings go under `providers.oidc.properties` (see UC-14 section; `additionalConfig` beside `properties` is a 400). Channels are only `push` and `email`. The app admits **entitled users only** (403 `CSIAQ0279E`). `login_hint` is the user name only. A real e-mail approval returned tokens; the poll and audit behave as documented. **No unlock endpoint:** only a SCIM password replace clears a lockout. The events API needs `readReports`. A locked account still gets a 200 request but **no e-mail arrived** (observed once). | UC-14 is demonstrable on e-mail; push needs a phone. The lock is applied after the approval in the demo. |
+| 50 | **Custom attributes never reach the ID token or userinfo (UC-01, 2026-11-12).** Tested with `tags:["sso"]`, `credName`, `sendAllKnownUserAttributes:"true"` and several mapping payloads: the claim is absent. Enterprise attributes DO arrive when the app has `sendAllKnownUserAttributes:"true"`: `employeeNumber` -> `employee_id`, `department` -> `department`, `title` -> `job_title`, mobile phone -> `mobile_number`. | **Corrects the old UC-01 step 5 ("map `client360_id` into the ID token via attribute mapping").** The Client 360 id is stored in `employeeNumber` (token claim `employee_id`) AND in the custom attribute `client360Id` (queryable). |
+| 51 | **Custom attribute creation (UC-01):** `POST /v1.0/attributes/` with `Content-Type: application/scim` returns 201 `{id}`. `schemaAttribute.scimName` must be **alphanumeric** (`client360_id`, `a-b`, `x_y` give 400 `CSIAI0096E`); `schemaAttribute.name` must be a free slot `customAttributeN`; `constraints.unique:true` is enforced on user create (400 `CSIAI0313E` "value ... already exists"). `DELETE /v1.0/attributes/{id}` 204. SCIM filter on a custom attribute needs the full URN prefix: `urn:ietf:params:scim:schemas:extension:ibm:2.0:User:customAttributes.<scimName> eq "x"`. | Names in the old guide (`postal_code`, `client360_id`) are not valid; use `client360Id`, `policyNumber`, `hasVehicle`. Postal code and language use the standard SCIM `addresses` and `preferredLanguage`. |
+| 52 | **Duplicate behaviour (UC-01):** a second `POST /v2.0/Users` with the same `userName` is 409 (case-insensitive). A different `userName` with the same e-mail is **201** (not blocked). | The e-mail / phone / policy duplicate rules cannot be left to Verify: they run in IFC's registration service with SCIM filters (`emails.value`, `phoneNumbers.value`, custom attribute). The `unique` attribute is the backstop. |
+| 53 | **E-mail OTP details (UC-01):** `POST /v2.0/factors/emailotp/transient/verifications {correlation, emailAddress}` 201; the e-mail reads `NNNN-NNNNNN` (first 4 = correlation); the person types the 6 digits; 5 attempts (`retries:4`); wrong code 400 `CSIBN0021E`, 5th wrong `CSIBN0080E`. The API client needs **`authnAnyUser`** (with only `generateOTP`: 403 `CSIAK4300E`); adding a user to a group needs **`manageGroupMembers`**. SCIM errors carry the code in `detail` (e.g. `CSIAI0020E`), OTP errors in `messageId`. | Least-privilege registration client = `readUsers, manageUsers, authnAnyUser, manageGroupMembers`. Disposable mail.tm inboxes receive the Verify e-mail (4 s to about 2 min), so a script can read the real OTP without a human. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -146,27 +150,34 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-01: Self-service registration and progressive profiling
 
-**Status:** Bob can build **Track A** fully (app + API). Track B (Verify Flow) is **blocked: Flow designer not enabled** `[LIVE]`.
+**Status: BUILT and VERIFIED, Track A** (2026-11-12). `node demo/uc01-registration/verify.js` 52/52 PASS (`demo/out/uc01.json`, 0 failed, secret scan clean), teardown leaves only UC-13/14/15 objects, setup repeats from scratch. Track B (Verify Flow) is **blocked: Flow designer not enabled** `[LIVE]` (403 `CSIBZ0098E`), and no self-registration configuration API was found. The browser pass with your own mailbox is `[HUMAN]`.
 
-**Build steps (Track A)**
-1. `demo/uc01-registration/setup.js`: create tenant custom attributes via `POST /v1.0/attributes` (this repo's `createAttributes` already does it): `postal_code`, `preferred_language`, `has_vehicle`, `client360_id`. Group `ifc-demo-customers`.
-2. `stubs/client360/server.js` (port 4010): `GET /client360?email=` returns `{ client360_id, segment }` deterministically (hash of email).
-3. New route `routes/ifc-register.js` in the demo app:
-   - `POST /ifc/register/start {email}`: duplicate check with `GET /v2.0/Users?filter=emails.value eq "<email>"` `[LIVE]` (returns `totalResults`). If found: respond "account exists".
-   - Email OTP: `POST /v2.0/factors/emailotp/transient/verifications` `{correlation, emailAddress}` then `POST …/{id}` with the OTP `[DOCS]`. Do **not** assume it returns the OTP; the user reads it from email.
-   - `POST /ifc/register/complete`: `POST /v2.0/Users` with email only (minimal data) and header `usershouldnotneedtoresetpassword`. Call the Client 360 stub and `PATCH` `client360_id` into the user's custom attributes.
-4. Progressive profiling: on OIDC login callback in `app.js`, read the user; if `postal_code` empty, redirect to `/ifc/profile/step2`, which `PATCH`es `/v2.0/Users/{id}`.
-5. Token enrichment: map `client360_id` into the ID token via the app's attribute mapping. `[INFER]` the OIDC app can map custom attributes; **test** that the claim appears.
+**Proven `[LIVE]`** (all executed against the tenant; the OTP e-mails are real Verify e-mails, read by the script from disposable mail.tm inboxes)
+- Minimal identity: SCIM create with e-mail + password only (no name, phone or address), about 0.3 s, **after** the address is proven; an abandoned registration leaves nothing in the directory. The e-mail is the `userName` (sign-in works by userName only).
+- Verification: Verify sends the e-mail (`POST /v2.0/factors/emailotp/transient/verifications`, about 0.3 s to accept); verify via `POST .../{id}`; 4 wrong codes count down, the 5th gives `CSIBN0080E`; reused/unknown transaction refused; a weak password (`CSIAI0020E`) does not cost the code.
+- Duplicates (IFC rules in `stubs/registration-portal/service.js`): e-mail incl. capitals/spaces, phone (any format), matched policy number; configurable per rule; the tenant `unique` attribute `policyNumber` refuses a second account even if the application check is skipped (400 `CSIAI0313E`). Someone who only knows a policy number (wrong postal code) is not linked.
+- Client 360 link (stub): policy + postal code match -> the owner's `C360-100231`; prospect -> `C360-P<hash>`; Client 360 down -> registration still succeeds, link marked pending. Stored in `employeeNumber` and `client360Id`. **No Client 360 call at sign-in** (stub counter).
+- Sign-in: password grant and the portal's authorization code + PKCE through the hosted Verify login; ID token `sub` = Verify id, `employee_id` = Client 360 id.
+- Progressive profiling by SCIM PATCH: stage `address` (postal code, language) then stage `about` (vehicle, optional mobile), one at a time, completeness 25 -> 75 -> 100 %; field validation; duplicate phone refused on the second account; answers filterable in the directory. `GET /v2.0/Me` works with the customer token, `PATCH /v2.0/Me` is 405.
+- Least privilege: the service runs on a 4-entitlement client (403 on `/v1.0/apiclients`).
 
-**Human steps**
-- `[HUMAN]` Real inbox to receive the OTP email (or use a mailbox you control).
-- `[HUMAN]` Ask IBM to enable **Flow designer** if IFC wants the flow-based showpiece (Track B) and, separately, to enable **User forms**.
+**What was built:** `demo/uc01-registration/{common,setup,run,verify,teardown,serve}.js` + README, `stubs/client360/server.js` (:4010), `stubs/registration-portal/{service,server}.js` (:4011), `ensureCustomAttribute`/`deleteAttributesByPrefix` in `demo/lib/idempotent.js`, `teardown-all.js` (attributes, members of `ifc-demo-*` groups).
 
-**Verification:** a script posts email, reads user back via SCIM, confirms attributes; second attempt with same email returns the duplicate message; decode ID token and assert `client360_id` claim.
+**Changes to the plan above (the earlier text was wrong or replaced)**
+- Token enrichment: custom attributes do **not** reach tokens (finding 50). The Client 360 id travels as `employee_id` (from `employeeNumber`).
+- Attribute names: `client360_id` etc. are invalid (finding 51): `client360Id`, `policyNumber`, `hasVehicle`; postal code/language use SCIM `addresses` / `preferredLanguage`.
+- `routes/ifc-register.js` in the demo app and the redirect in `app.js` were **not** built: a standalone portal on :4011 keeps the existing app untouched. Progressive profiling is triggered by the portal after sign-in, not by `app.js`.
+- Duplicate check is not just `emails.value` (finding 52).
 
-**Teardown:** delete users in group `ifc-demo-customers`; delete attributes (optional).
+**Not proven / left for you**
+- `[HUMAN]` Registering in a real browser with your own mailbox: `node demo/uc01-registration/setup.js && node demo/uc01-registration/serve.js`, open `http://localhost:4011`, follow `DEMO-RUNBOOK-UI.md` UC-01.
+- `[LIVE]` Flow designer / Track B and User forms: blocked (IBM). Item 1 of the message to IBM.
+- `[DOCS]` Factor choice at signup (passkey, TOTP) and SMS OTP: not covered (e-mail OTP + password). SMS is blocked on this tenant (finding 21).
+- `[INFER]` Multi-brand / multi-tenant registration: not demonstrated (UC-10 covers per-brand login).
+- Registration transactions live in memory in the portal process; custom attributes are limited to the free `customAttributeN` slots.
+- The wizard is a stand-in for IFC's own portal; the hosted Verify pages are IBM-styled (branding refused on the trial).
 
-**Open risks:** claim mapping unproven; OTP email delivery from a trial tenant; external callout at token time is **not available on trial** `[DOCS]` so the demo stores the Client 360 value on the user ahead of time (that is also the "no latency" story).
+**Run it:** `node demo/uc01-registration/setup.js`, `node demo/uc01-registration/run.js` (52 checks, 40-90 s, no human), `node demo/uc01-registration/verify.js`, `node demo/uc01-registration/teardown.js`.
 
 ---
 
@@ -568,7 +579,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 2 | Install **IBM Verify** app on 1-2 phones. For UC-06: `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push`. | UC-04, UC-06, UC-14 push | 10 min |
 | 3 | Create a **public tunnel** (ngrok/cloudflared) for webhooks and back-channel logout. | UC-05, UC-08, UC-13 | 15 min |
 | 4 | `mkcert -install`, add `127.0.0.1 ifc-demo.local` to `/etc/hosts`. | UC-02 | 15 min |
-| 5 | Provide a test mailbox you can read (or several aliases). | UC-01, UC-03, UC-06, UC-14 | 5 min |
+| 5 | Provide a test mailbox you can read (or several aliases). UC-01 browser pass: `node demo/uc01-registration/serve.js`, open `http://localhost:4011` (steps in UC-01 above). | UC-01, UC-03, UC-06, UC-14 | 5 min |
 | 6 | Run the passkey ceremony once in a browser. | UC-02 | 5 min |
 | 7 | **Closed (finding 45):** OpenFGA runs as a checksummed native binary, no Podman needed. Replaced by item 12 below. | UC-12 | 0 |
 | 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
@@ -590,8 +601,8 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 ## 5. Recommended build order (updated by live findings)
 
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
-2. **UC-09, UC-13, UC-14, UC-15 built and verified.** UC-15 next human steps: browser consent grant (5 min).
-3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
+2. **UC-01 (Track A), UC-09, UC-13, UC-14, UC-15 built and verified.** UC-15 next human steps: browser consent grant (5 min).
+3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-03** (UC-01 Track A is built and verified).
 4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
 5. **UC-10 (partial, built; branding and domains need IBM)**, **UC-11 (partial, built; native JIT needs IBM)**, then **UC-12, UC-05** (blocked or partial).
 
@@ -612,4 +623,5 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `stubs/legacy-auth-store/`, `stubs/migration-gateway/`, `demo/uc11-migration/` | UC-11: legacy store stub (12 hash schemes), gateway JIT pattern, CSV bulk import, forced reset, rollback, 52 live checks, verify/teardown. No shared helper changed | Section 2, UC-11 |
 | `stubs/rules-engine/`, `stubs/policy-api/`, `demo/uc12-rebac/` | UC-12: OpenFGA native binary downloader/launcher and model, source-system stub with graph sync, policy gateway with reasoning path and audit log, presenter console and terminal client, 53 live checks, verify/teardown. No shared helper changed | Section 2, UC-12 |
 | `demo/uc15-consent/` (common, setup, run, verify, teardown, serve, README), `demo/teardown-all.js` (purposes + dissociate) | UC-15: DPCM purpose lifecycle, purpose-app association, DCR, DSP, DUA, admin consent export, DSAR stub; 20 PASS / 0 FAIL / 2 HUMAN; ropc on TrustMeInsurance for user-context token; key finding: CSIBT0032E blocks per-user consent write via API token | Section 2, UC-15 |
+| `demo/uc01-registration/`, `stubs/client360/`, `stubs/registration-portal/`, `demo/lib/idempotent.js` (`ensureCustomAttribute`, `deleteAttributesByPrefix`), `demo/teardown-all.js` (attributes, `ifc-demo-*` group members) | UC-01: registration wizard service, Client 360 stand-in, real e-mail OTP, duplicate rules, progressive profiling, 52 live checks | Section 2, UC-01 |
 

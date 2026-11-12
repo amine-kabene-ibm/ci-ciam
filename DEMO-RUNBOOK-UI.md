@@ -26,7 +26,7 @@
 
 | UC | Topic | Readiness today | UI used | Honest limitation to state |
 |---|---|---|---|---|
-| 01 | Self-service registration, progressive profiling | PARTIAL NOW (app "Get a Quote" creates accounts) / NEEDS BUILD (OTP + Client 360) | Demo app, Verify login, mailbox | Flow designer is not enabled, so no no-code flow showpiece yet |
+| 01 | Self-service registration, progressive profiling | **READY NOW** for the scripted path (52/52 `[LIVE]`, `verify.js` PASS: real Verify e-mail OTP, duplicates, Client 360 link, progressive stages) / NEEDS HUMAN for a real browser pass with your own mailbox | Registration portal in a browser (`localhost:4011`), your mailbox, admin console (users, group) | Flow designer is not enabled and there is no self-registration config API, so the wizard is IFC-style code around Verify's APIs, not a no-code Verify flow; custom attributes do not reach the ID token (the Client 360 id travels as `employee_id`); no passkey/SMS choice at signup |
 | 02 | Passkeys, OTP, TOTP fallback | NEEDS BUILD + HUMAN SETUP | Demo app over HTTPS, browser authenticator | Needs `mkcert` + hostname; BYO SMS gateway attach unverified |
 | 03 | Risk-aware recovery, agent-assisted | PARTIAL NOW (app forgot-password) / NEEDS BUILD (agent console) | Demo app, agent page, admin console events | No AI risk score without Adaptive access |
 | 04 | Trusted devices, push, revoke | NEEDS IBM / HUMAN SETUP | IBM Verify app on phone, admin console | Two registrations for one user unconfirmed |
@@ -95,39 +95,38 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-01: Self-service registration and progressive profiling
 
-**Readiness:** PARTIAL NOW. The "Get a Quote" path creates an account with minimal data and collects more on later quotes. The IFC-specific variant (email OTP, duplicate check, Client 360 id in the token) is NEEDS BUILD. Flow designer showpiece is NEEDS IBM.
+**Readiness:** READY NOW for the scripted path (52/52 `[LIVE]`, `node demo/uc01-registration/verify.js` PASS). The browser pass with your own mailbox is `[HUMAN]` (not executed by Bob). Flow designer showpiece is NEEDS IBM.
 
 **Prerequisites**
-- App running; test email address you can read; Verify email delivery working (send one test before the session) `[HUMAN]`.
+- `node demo/uc01-registration/setup.js` then `node demo/uc01-registration/serve.js` (portal on `http://localhost:4011`, Client 360 stand-in on `:4010`). Keep the app on `:3000` running only if you also show the legacy "Get a Quote" path.
+- A mailbox you can read `[HUMAN]` (or use the page's "disposable test inbox" link: a real Verify e-mail is still sent and the code is read for you).
+- Admin console open in a second tab: Directory → Users and Groups.
 
-**Click path (today's app)**
-1. Customer window → `http://localhost:3000` → fill **First name, Last name, Email** → **Get a quote**.
-2. Choose **Car** → fill vehicle details and ZIP → submit.
-3. Success page says a password was generated and emailed.
-4. Open mailbox → follow the Verify email → sign in with the generated password → set a new one if prompted.
-5. Land on **My Profile**. Show name, email, and the quote count.
-6. Start a second quote (Home). Show that no new account is created, and the existing one is updated.
-
-**Click path (once built, UC-01 Track A)**
-1. `/ifc/register/start` → enter email → app checks duplicates in Verify → **email OTP** → enter code.
-2. Account is created with minimal data. Show the profile with only email.
-3. Do a first action, e.g. start a quote. The app redirects to **step 2** and asks for postal code only. Complete it.
-4. Decode the ID token on the profile debug panel: show the `client360_id` claim.
+**Click path**
+1. Open `http://localhost:4011`. Type your e-mail (or click "use a disposable test inbox"). Tick "I am already an IFC customer" and enter `AUTO-31877` / `H2X 1Y4` for a policy-linked customer, or leave unticked for a prospect. **Continue**.
+2. The right-hand panel shows the Verify API calls just made (duplicate check by SCIM filter, then the e-mail OTP). Open the mailbox: the e-mail reads `NNNN-NNNNNN`; the first four digits match the number on screen. Type only the six digits after the dash, choose a password, **Create my account**.
+3. Message shows the creation time (about 1 s) and the Client 360 id. In the admin console, open the user: only e-mail and password were collected (no name, phone, address), `employeeNumber` holds the Client 360 id, and the user is in group `ifc-demo-uc01-customers`.
+4. **Duplicate detection:** start over with the same e-mail (also in capitals): "You already have an account (matched on: email)", and no e-mail is sent. Optional: a new e-mail with `AUTO-31877` / `H2X 1Y4` is refused on **policy**.
+5. Click **Sign in**: Verify's hosted login (code + PKCE). Back on the portal: "Profile 25% complete", and **one** question: postal code + language. Save. Sign out and in again: the next visit asks only about the vehicle (+ optional mobile). Then 100%: nothing more is asked.
+6. In the "what the tenant knows" panel show the ID-token claims: `employee_id` = Client 360 id, no Client 360 call at sign-in.
 
 **Talk track**
-- "Only collect what you need to get them in. The rest comes when it's useful: progressive profiling."
-- "Duplicate detection is a SCIM query on email, not custom matching."
-- "Client 360 linking happens at registration; the id is stored on the identity so tokens carry it with no runtime call to your CRM." (Honest: this is deliberate because trial tenants cannot do an external callout at token time.)
+- "Only collect what you need to get them in: e-mail and password. The rest comes one question at a time, when it is useful."
+- "Verify sends and checks the e-mail code, stores the identity and issues the tokens. Your portal asks Verify; it does not hold the customer's secrets."
+- "Duplicate rules (e-mail, phone, policy) are yours to tune: Verify itself only blocks an identical user name, so IFC's service decides what 'same person' means and the unique policy-number attribute is the backstop."
+- "Client 360 linking happens once at registration; the id rides in the token, so there is no call to your CRM at sign-in. If Client 360 is down, registration still succeeds and the link is marked pending."
 
 **Show in admin console**
-- Directory → Users: the new user, attributes filling in over time (custom attributes: `quoteCount`, `carMake`, ...).
-- Reports / Events: user-registration and email-OTP events.
+- Directory → Users: the new user, attributes filling in over the visits. Directory → Groups: `ifc-demo-uc01-customers`.
+- Reports / Events: user create and e-mail OTP events.
+- Attributes (custom): `ifc-demo-uc01-policy-number` marked unique.
 
 **If it breaks**
-- No email: use the admin console → user → reset password to set one; or run the SCIM create from a script with header `usershouldnotneedtoresetpassword: true`.
-- OTP not arriving: fall back to the app's pre-seeded user.
+- No e-mail within a minute: check spam; use the disposable test inbox link; or `node demo/uc01-registration/run.js` shows the scripted proof.
+- Wrong code 5 times: "Too many wrong codes. Start over." (expected; 5 attempts then CSIBN0080E).
+- Portal won't start: port 4010/4011 busy (`lsof -i :4011`), or setup not run.
 
-**Honest limitation:** Flow designer is not enabled `[LIVE]`, so the visual no-code orchestration is not demoable until IBM enables it. Claim mapping of `client360_id` into the ID token is not yet proven `[INFER]`.
+**Honest limitation:** Flow designer is not enabled `[LIVE]` and no self-registration configuration API exists, so there is no no-code Verify flow to show: the wizard is a stand-in for IFC's own portal. Custom attributes do not appear in the ID token `[LIVE]`; the Client 360 id is carried as `employee_id`. Passkey/TOTP choice and SMS verification at signup, and multi-brand registration, are not demonstrated.
 
 ---
 

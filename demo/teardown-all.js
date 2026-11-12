@@ -10,13 +10,23 @@ const idem = require('./lib/idempotent');
 const listOnly = process.argv.includes('--list');
 
 async function inventory() {
-  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], webhooks: [], purposes: [] };
+  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], webhooks: [], purposes: [], attributes: [] };
 
   const u = await api('GET', '/v2.0/Users', { query: { filter: `userName sw "${PREFIX}"`, attributes: 'id,userName', count: 200 } });
   inv.users = ((u.data && u.data.Resources) || []).map((x) => ({ id: x.id, name: x.userName }));
 
   const g = await api('GET', '/v2.0/Groups', { query: { filter: `displayName sw "${PREFIX}"` } });
   inv.groups = ((g.data && g.data.Resources) || []).map((x) => ({ id: x.id, name: x.displayName }));
+
+  // Members of an ifc-demo-* group are demo users too, even when their user name is a real e-mail address (UC-01: a person
+  // who registers in the portal with their own mailbox is added to ifc-demo-uc01-customers).
+  for (const grp of inv.groups) {
+    const gd = await api('GET', `/v2.0/Groups/${grp.id}`, { quiet: true });
+    for (const m of (gd.data && gd.data.members) || []) {
+      if (m.type !== 'user' && m.type !== undefined) continue;
+      if (!inv.users.some((x) => x.id === m.value)) inv.users.push({ id: m.value, name: m.display || m.value });
+    }
+  }
 
   const c = await api('GET', '/v1.0/apiclients');
   inv.apiClients = ((c.data && c.data.apiClients) || []).filter((x) => x.clientName.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.clientName }));
@@ -39,6 +49,8 @@ async function inventory() {
 
   const pur = await api('GET', '/dpcm-mgmt/config/v1.0/privacy/purposes', { quiet: true });
   inv.purposes = ((pur.data && pur.data.purposes) || []).filter((x) => x.id.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.id }));
+
+  inv.attributes = (await idem.listTenantAttributes()).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
   return inv;
 }
 
@@ -62,6 +74,7 @@ async function main() {
       });
       console.log('  delete purpose    ', x.name, (await api('DELETE', `/dpcm-mgmt/config/v1.0/privacy/purposes/${encodeURIComponent(x.id)}`, { quiet: true })).status);
     }
+    for (const x of inv.attributes) console.log('  delete attribute  ', x.name, (await api('DELETE', `/v1.0/attributes/${x.id}`, { quiet: true })).status);
     inv = await inventory();
   }
   console.log(`\nObjects named "${PREFIX}*" on the tenant now: ${count(inv)}`);

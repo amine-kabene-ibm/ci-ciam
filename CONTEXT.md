@@ -1,6 +1,6 @@
 # CONTEXT: where we are (read this first in a new session)
 
-**Last updated:** 2026-11-12 (UC-15 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
+**Last updated:** 2026-11-12 (UC-01 added). **Branch:** `master`. **Repo:** `ci-ciam` (TrustMeInsurance, a Node/Express CIAM demo app for IBM Verify SaaS).
 
 ## 1. The mission
 
@@ -21,6 +21,7 @@ IFC asked for **15 use cases** (`IAM Modernization Use Cases.pdf`). We must show
 | How a human presents each demo on the UI, with readiness labels | [`DEMO-RUNBOOK-UI.md`](DEMO-RUNBOOK-UI.md) | Done |
 | Repo blocker fixes in `functions.js` | commit `688ecd2` | Done (see section 4) |
 | **Demo foundation**: `demo/lib/{verify,idempotent,totp}.js`, `demo/00-probe.js` (12 live checks), `demo/teardown-all.js` | `demo/` | Done, run on the tenant |
+| **UC-01 Self-service registration, progressive profiling**: `demo/uc01-registration/` (common, setup, run, verify, teardown, serve, README), `stubs/client360/`, `stubs/registration-portal/`, `demo/lib/idempotent.js` (`ensureCustomAttribute`, `deleteAttributesByPrefix`), `demo/teardown-all.js` (attributes, `ifc-demo-*` group members) | `demo/uc01-registration/` | **Built, Track A, VERIFIED.** 52/52 `verify.js` PASS (`demo/out/uc01.json`), torn down and rebuilt from zero. Proven: real Verify e-mail OTP (read from a disposable mail.tm inbox), 5-attempt limit, minimal identity (e-mail + password), duplicates by e-mail/phone/policy (+ unique-attribute backstop), Client 360 link (stub) stored as `employeeNumber` -> `employee_id`, Client 360 down tolerated, sign-in (password grant + portal code/PKCE), progressive profiling in 2 stages. **Not proven:** Flow designer / Track B (blocked), a real browser pass with your mailbox `[HUMAN]`, passkey/SMS at signup. Orchestration is IFC code, not a Verify flow. |
 | **UC-06 Voicebot**: `stubs/voicebot-ccaas/`, `demo/uc06-voice/` (setup, run, caller, enroll-phone, verify, teardown, README) | `demo/uc06-voice/` | **Built, PARTIAL.** E-mail OTP + TOTP step-up verified live (32/32, `demo/out/uc06.json`). Push and passkey step-up not proven: need a phone / browser `[HUMAN]` |
 | **UC-07 App-to-voice handoff**: `demo/uc07-handoff/` (setup, run, serve, voice, verify, teardown, README), `routes/ifc-handoff.js`, `views/insurance/call-us.hbs`, `/handoff` in `stubs/voicebot-ccaas` | `demo/uc07-handoff/` | **Built, PARTIAL.** Verify side proven live: 48/48 scenarios (`demo/out/uc07.json`), `verify.js` 21 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser login to the app (2FA policy), push, passkey `[HUMAN]` |
 | **UC-08 SSO and global logout**: `demo/uc08-sso/` (setup, run, serve, verify, teardown, README, browser), `stubs/rp-sso/` | `demo/uc08-sso/` | **Built, PARTIAL.** Verified live: 37/37 scenarios (`demo/out/uc08.json`), `verify.js` 14 PASS / 0 FAIL / 3 HUMAN. Not executed: real browser, back-channel delivery (tunnel), idle/absolute timeouts (no API) `[HUMAN]` |
@@ -37,7 +38,7 @@ Evidence tags used in every doc: `[LIVE]` executed on the tenant, `[DOCS]` from 
 
 ## 3. What is NOT done (important)
 
-**Built so far:** the foundation, **UC-06**, **UC-07**, **UC-08**, **UC-09**, **UC-10**, **UC-11**, **UC-12**, **UC-13**, **UC-14** and **UC-15** (see section 2). **Everything else is still only described in the build guide:** the other 5 use cases, the agent page `/agent` (UC-03; UC-14 has its own console in `stubs/agent-console/`), `routes/ifc-register.js`, `routes/passkey.js`. Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
+**Built so far:** the foundation, **UC-01** (Track A), **UC-06**, **UC-07**, **UC-08**, **UC-09**, **UC-10**, **UC-11**, **UC-12**, **UC-13**, **UC-14** and **UC-15** (see section 2). **Everything else is still only described in the build guide:** the other 4 use cases (02, 03, 04, 05), the agent page `/agent` (UC-03; UC-14 has its own console in `stubs/agent-console/`), `routes/passkey.js`. (`routes/ifc-register.js` was replaced by the standalone portal in `stubs/registration-portal/`.) Application code outside `demo/` and `stubs/` is unchanged except the `functions.js` fix.
 Nothing has been pushed. Check with `git status` and `git log origin/master..master`.
 
 ## 4. Repo state
@@ -117,6 +118,10 @@ Full table: `DEMO-BUILD-GUIDE.md` section 0.1. The ones you must remember:
 25. **No token-time callout here:** `/v1.0/attributefunctions` has 13 built-ins only (POST is 405); `POST /v1.0/attributes` accepts only STATIC, CREDENTIAL, SCHEMA, PROFILE, ORG (400 `CSIBE2716E`); `tokenResponseMap` in the app's `oidc.properties` is 400. Other placements untested (`[INFER]`).
 26. **Relationship model:** `servicing = placed_by and member from brokerage`; `viewer = servicing or manager from brokerage`; `editor = servicing`. A broker who leaves loses access on the next check by deleting one tuple. 8,120 tuples load in ~0.8 s; check ~1 to 6 ms; list-objects ~1 to 2 ms (in memory, not a benchmark).
 27. **DPCM consent write is browser-path only on this trial tenant `[LIVE 2026-11-12]`:** `PATCH /dpcm/v1.0/privacy/consents` to create per-user consent records returns `CSIBT0032E "This API client can be used to create global consents only."` for both the privileged API client (165 entitlements including `createPrivacyConsent`) and a password-grant user token. Only a real browser OIDC session (session cookie) writes per-user consents. DSP (`/dpcm/v1.0/privacy/data-subject-presentation` with `subjectId`) and DUA (`/dpcm/v1.0/privacy/data-usage-approval` with `subjectId`) work correctly with any token. Purpose dissociation from an application is required before purpose deletion (otherwise `CSIBT0012E "resource is in use"`): use `PATCH /dpcm-mgmt/config/v1.0/privacy/purpose-relationships` with `op:remove` first.
+28. (Findings 28-31 are from UC-01, 2026-11-12, all `[LIVE]`; details in `DEMO-BUILD-GUIDE.md` 0.1 rows 50-53.) **Custom attributes never reach the ID token / userinfo** (even with `sendAllKnownUserAttributes`); enterprise attributes do (`employeeNumber` -> `employee_id`, `title` -> `job_title`, `department`, mobile -> `mobile_number`). The Client 360 id is therefore stored in `employeeNumber` as well as the custom attribute `client360Id`. **This corrects the old UC-01 plan** ("map `client360_id` into the token").
+29. **Custom attributes:** `POST /v1.0/attributes/` (`Content-Type: application/scim`), SCIM name alphanumeric only (`client360Id`, not `client360_id`), free slot `customAttributeN`, `constraints.unique` enforced (400 `CSIAI0313E`). SCIM filter on them needs the full `urn:ietf:params:scim:schemas:extension:ibm:2.0:User:customAttributes.<name>` prefix.
+30. **Verify only blocks an identical `userName`** (409, case-insensitive); the same e-mail under another userName is 201. Duplicate rules on e-mail/phone/policy are IFC-side (SCIM filters), `unique` attribute as backstop.
+31. **E-mail OTP:** needs `authnAnyUser` (not `generateOTP`); group membership needs `manageGroupMembers`; `NNNN-NNNNNN` (type the 6 digits), 5 attempts, `CSIBN0080E` on the 5th wrong one. **Disposable mail.tm inboxes receive Verify's e-mail**, so scripts can read the OTP without a human (429 on bursts: retry).
 - `demo/lib/verify.js` loads `.env` from the repo root by path, so demo scripts work from any cwd.
 
 ## 6. Verdicts (15 use cases)
@@ -148,11 +153,12 @@ Updated by live findings: **UC-10 is PARTIAL, built** (policy, language, per-bra
 
 ## 8. What to start building next
 
-**Foundation, UC-06 to UC-15 are done (UC-06, 07, 08, 10, 11, 12, 13, 14 and 15 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
+**Foundation, UC-01 and UC-06 to UC-15 are done (UC-01, 06, 07, 08, 10, 11, 12, 13, 14 and 15 have human steps pending; UC-09 has none).** Recommended order from here (full order in `DEMO-BUILD-GUIDE.md` section 5):
 
+0. **Close UC-01 (10 min, `[HUMAN]`):** `node demo/uc01-registration/setup.js && node demo/uc01-registration/serve.js`, open `http://localhost:4011`, register with your own mailbox (type the 6 digits after the dash), sign in, answer the two profile questions (steps in `DEMO-RUNBOOK-UI.md` UC-01). Then `node demo/uc01-registration/teardown.js`.
 1. **Close UC-15 (5 min, `[HUMAN]`):** `node ./bin/www`, sign in as `ifc-demo-uc15-policyholder` (password in `demo/out/uc15.state.json`), My Profile → Communication preferences → toggle on → Save. Re-run `node demo/uc15-consent/run.js` to confirm DUA passes.
 2. **Close UC-06 and UC-07 (about 30 min, `[HUMAN]`):** install IBM Verify on a phone, `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push` and approve. Then the UC-07 browser path: `node demo/uc07-handoff/setup.js`, restart `node ./bin/www`, `node demo/uc07-handoff/serve.js`, sign in as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot", then `node demo/uc07-handoff/voice.js`.
-3. **UC-01 Track A, UC-03** (reuse the UC-14 console and the password-replace unlock). **UC-15 is built**: `node demo/uc15-consent/{setup,run,verify,teardown}.js`; live demo = `serve.js` on `http://localhost:4151`. **UC-14 is built and verified**: `node demo/uc14-ciba/{setup,run,verify,teardown}.js`, `run.js --approve` for the real approval, live demo = `serve.js` on `http://localhost:4140`; **UC-14 human steps:** (a) phone push: enrol a phone and use `ensureCibaApp(name,{channels:['push','email']})`; (b) rehearse the e-mail approval once. **UC-13 is built and verified**: `node demo/uc13-lifecycle/{setup,run,verify,teardown}.js`; live demo = `serve.js` on `http://localhost:4040`.
+3. **UC-03 next** (reuse the UC-14 console and the password-replace unlock; the UC-01 mail.tm helper in `demo/uc01-registration/common.js` reads reset e-mails without a human). **UC-01 is built and verified**: `node demo/uc01-registration/{setup,run,verify,teardown}.js`; live demo = `serve.js` on `http://localhost:4011`. **UC-15 is built**: `node demo/uc15-consent/{setup,run,verify,teardown}.js`; live demo = `serve.js` on `http://localhost:4151`. **UC-14 is built and verified**: `node demo/uc14-ciba/{setup,run,verify,teardown}.js`, `run.js --approve` for the real approval, live demo = `serve.js` on `http://localhost:4140`; **UC-14 human steps:** (a) phone push: enrol a phone and use `ensureCibaApp(name,{channels:['push','email']})`; (b) rehearse the e-mail approval once. **UC-13 is built and verified**: `node demo/uc13-lifecycle/{setup,run,verify,teardown}.js`; live demo = `serve.js` on `http://localhost:4040`.
 4. **UC-02, UC-04** (need browser or phone), then **UC-05** (needs IBM). UC-12 is built: `node demo/uc12-rebac/{setup,run,verify,teardown}.js`; live demo = `serve.js` then `http://127.0.0.1:4170` or `cli.js`. UC-11 is built: `node demo/uc11-migration/{setup,run,verify,teardown}.js`; live demo = `serve.js` + `show.js` + `bulk.js` + `rollback.js`. **UC-10 human steps:** `node demo/uc10-brands/setup.js && node demo/uc10-brands/serve.js`, open `http://aurora.localhost:4101` and `http://boreal.localhost:4102` (steps in `demo/uc10-brands/README.md`); once IBM enables branding run `node demo/uc10-brands/themes.js`.
 5. Send the IBM message (`DEMO-BUILD-GUIDE.md` section 4, including SMS/voice OTP enablement).
 
@@ -165,6 +171,9 @@ node ./bin/www &                       # base app on :3000 (only needed for the 
 curl -X POST localhost:3000/setup      # must return 200
 node demo/00-probe.js                  # 12/12 expected
 node demo/teardown-all.js --list       # what ifc-demo-* objects exist
+node demo/uc01-registration/setup.js && node demo/uc01-registration/run.js && node demo/uc01-registration/verify.js
+node demo/uc01-registration/serve.js                            # registration portal on :4011 (Client 360 stand-in on :4010)
+node demo/uc01-registration/teardown.js                         # removes all ifc-demo-uc01-* objects and the registered customers
 node demo/uc06-voice/setup.js && node demo/uc06-voice/verify.js
 node demo/uc07-handoff/setup.js && node demo/uc07-handoff/run.js && node demo/uc07-handoff/verify.js
 node demo/uc08-sso/setup.js && node demo/uc08-sso/verify.js     # then: node demo/uc08-sso/serve.js for the browser demo
@@ -179,7 +188,7 @@ node demo/uc15-consent/teardown.js                              # removes all if
 ```
 
 ### Suggested first prompt for the next session
-> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then close UC-15: sign in as `ifc-demo-uc15-policyholder`, toggle Communication preferences, re-run `node demo/uc15-consent/run.js` to prove DUA approved. Next: build UC-01 Track A and UC-03. Don't print `.env` values.
+> Read `CONTEXT.md`, then `DEMO-BUILD-GUIDE.md` sections 0 to 2. Start the app and re-run `POST /setup`, run `node demo/00-probe.js`, then close UC-15: sign in as `ifc-demo-uc15-policyholder`, toggle Communication preferences, re-run `node demo/uc15-consent/run.js` to prove DUA approved. Next: UC-03 (then close UC-01's browser pass with your mailbox). Don't print `.env` values.
 
 ## 9. Tooling that was used and may no longer exist (outside the repo)
 

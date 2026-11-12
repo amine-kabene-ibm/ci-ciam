@@ -336,6 +336,45 @@ async function ensureCibaApp(name, { channels = ['email'], sendAllKnownUserAttri
   return { appId: cur.appId, clientId: p.clientId, clientSecret: p.clientSecret, channels, created };
 }
 
+// Tenant custom user attributes (UC-01) [LIVE 2026-11-12]. POST /v1.0/attributes/ (Content-Type application/scim) returns 201 {id}.
+//  - `scim` (the name used in SCIM customAttributes) must be alphanumeric: "client360_id" and "a-b" give 400 CSIAI0096E. `name` (display) may carry the prefix.
+//  - schemaAttribute.name must be a free slot "customAttributeN" (we pick the lowest unused).
+//  - constraints.unique:true is enforced on user create/update (400, no messageId) and is a backstop for "one account per policy number".
+//  - Custom attributes are NOT emitted in the ID token / userinfo, even with tags:["sso"] and sendAllKnownUserAttributes.
+async function listTenantAttributes() {
+  const r = await api('GET', '/v1.0/attributes', { query: { search: 'scope="tenant"' } });
+  if (r.status !== 200) throw new Error(`list tenant attributes: HTTP ${r.status} cid=${r.cid}`);
+  return (Array.isArray(r.data) ? r.data : []).filter((a) => a.sourceType === 'schema');
+}
+
+async function ensureCustomAttribute({ name, scim, unique = false }) {
+  if (!name.startsWith(PREFIX)) throw new Error(`attribute name must start with ${PREFIX}`);
+  const existing = (await listTenantAttributes()).find((a) => a.schemaAttribute && a.schemaAttribute.scimName === scim);
+  if (existing) return { id: existing.id, slot: existing.schemaAttribute.name, created: false };
+  const s = await api('GET', '/v2.0/Schema/attributes', { query: { filter: 'custom' } });
+  const used = new Set(((s.data && s.data.Resources) || []).map((x) => x.name));
+  let n = 1; while (used.has(`customAttribute${n}`)) n++;
+  const c = await api('POST', '/v1.0/attributes/', {
+    headers: { 'Content-Type': 'application/scim' },
+    body: {
+      args: { name: scim }, datatype: 'string', name, description: 'ifc-demo custom attribute', scope: 'tenant', sourceType: 'schema', tags: [],
+      schemaAttribute: { customAttribute: true, name: `customAttribute${n}`, scimName: scim },
+      ...(unique ? { constraints: { unique: true, mandatory: false, readAccessForEndUser: true, writeAccessForEndUser: false } } : {}),
+    },
+  });
+  if (c.status !== 201) throw new Error(`create attribute ${scim}: HTTP ${c.status} cid=${c.cid}`);
+  return { id: c.data.id, slot: `customAttribute${n}`, created: true };
+}
+
+async function deleteAttributesByPrefix(prefix) {
+  const out = [];
+  for (const a of await listTenantAttributes()) {
+    if (!a.name.startsWith(prefix)) continue;
+    out.push({ name: a.name, status: (await api('DELETE', `/v1.0/attributes/${a.id}`, { quiet: true })).status });
+  }
+  return out;
+}
+
 // Webhook management (/config/v1.0/webhooks/)
 async function listWebhooks() {
   const r = await api('GET', '/config/v1.0/webhooks/', { quiet: true });
@@ -387,4 +426,5 @@ module.exports = {
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
   updateApplication, ensurePolicy, deletePoliciesByPrefix, appIdOf, listAppEntitlements, ensureAppEntitlement, removeAppEntitlement,
   listWebhooks, findWebhook, ensureWebhook, deleteWebhooksByPrefix, ensureCibaApp,
+  listTenantAttributes, ensureCustomAttribute, deleteAttributesByPrefix,
 };
