@@ -10,7 +10,7 @@ const idem = require('./lib/idempotent');
 const listOnly = process.argv.includes('--list');
 
 async function inventory() {
-  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], webhooks: [] };
+  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], webhooks: [], purposes: [] };
 
   const u = await api('GET', '/v2.0/Users', { query: { filter: `userName sw "${PREFIX}"`, attributes: 'id,userName', count: 200 } });
   inv.users = ((u.data && u.data.Resources) || []).map((x) => ({ id: x.id, name: x.userName }));
@@ -36,6 +36,9 @@ async function inventory() {
 
   const w = await api('GET', '/config/v1.0/webhooks/', { quiet: true });
   inv.webhooks = ((w.data && w.data.webhooks) || []).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
+
+  const pur = await api('GET', '/dpcm-mgmt/config/v1.0/privacy/purposes', { quiet: true });
+  inv.purposes = ((pur.data && pur.data.purposes) || []).filter((x) => x.id.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.id }));
   return inv;
 }
 
@@ -52,6 +55,13 @@ async function main() {
     for (const x of inv.stsClients) console.log('  delete sts client ', x.name, (await api('DELETE', `/v1.0/sts/oauth/clients/${x.id}`, { quiet: true })).status);
     for (const x of inv.themes) console.log('  delete theme      ', x.name, (await api('DELETE', `/v1.0/branding/themes/${x.id}`, { quiet: true })).status);
     for (const x of inv.webhooks) console.log('  delete webhook    ', x.name, (await api('DELETE', `/config/v1.0/webhooks/${x.id}`, { quiet: true })).status);
+    for (const x of inv.purposes) {
+      // Must dissociate from any app before deleting [LIVE 2026-11-12: CSIBT0012E otherwise]
+      await api('PATCH', '/dpcm-mgmt/config/v1.0/privacy/purpose-relationships', {
+        body: [{ op: 'remove', value: { extCategory: 'app', extId: '3258669560154975753', purposeId: x.id } }], quiet: true,
+      });
+      console.log('  delete purpose    ', x.name, (await api('DELETE', `/dpcm-mgmt/config/v1.0/privacy/purposes/${encodeURIComponent(x.id)}`, { quiet: true })).status);
+    }
     inv = await inventory();
   }
   console.log(`\nObjects named "${PREFIX}*" on the tenant now: ${count(inv)}`);

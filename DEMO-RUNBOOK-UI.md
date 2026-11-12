@@ -40,7 +40,7 @@
 | 12 | ReBAC | **PARTIAL NOW**: scripted 53/53 `[LIVE]`, `verify.js` 16 PASS / 0 FAIL / 4 HUMAN; browser look is a human step | Gateway console in a browser (`127.0.0.1:4170`) or terminal (`cli.js`), admin console (users) | Not a Verify-native feature: Verify authenticates, OpenFGA (open source, stand-in) authorizes; the "IdP calls the rules engine while minting the token" variant is not possible on this tenant (built-in attribute functions only) |
 | 13 | Broker lifecycle, immediate revocation | **READY NOW**: scripted 18/18 `[LIVE]`, `verify.js` PASS; interactive ops queue dashboard on `:4040` (`serve.js`) | Admin console (users, events), terminal (`run.js`), ops queue UI (`:4040`) | Webhook delivery from SaaS to local environment needs a public tunnel (`[HUMAN]`) |
 | 14 | CIBA agent-initiated | **READY NOW** for the e-mail channel (22/22 scripted + 8/8 with a real approval `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) | Agent console in a browser (`localhost:4140`), presenter mailbox, admin console events | Approval is a real human action; IFC's example is a push, only e-mail is proven; no per-agent admin role modelled |
-| 15 | Consent (PIPEDA) | PARTIAL NOW (comm. prefs, consent history, download, delete) / NEEDS BUILD (third parties, expiry, DSAR) | Demo app, admin console | DSAR SLA tracking is the stub's job, not Verify's |
+| 15 | Consent (PIPEDA) | **PARTIAL, BUILT**: purpose lifecycle, DCR, DSP, DUA, admin export scripted 20/20 `[LIVE]`; browser consent grant is HUMAN | Demo app (:3000) + admin console + consent dashboard (:4151) | DPCM write is browser-path only on this trial tenant (CSIBT0032E); DSAR SLA clock is IFC code |
 
 ---
 
@@ -520,26 +520,37 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-15: Consent management (PIPEDA)
 
-**Readiness:** PARTIAL NOW. Communication preferences, consent history, data download and account deletion work in the app today. Third-party consents, expiry, export and DSAR timer are NEEDS BUILD.
+**Readiness: PARTIAL, BUILT.** Purpose lifecycle, DCR, DSP, DUA and admin audit export proven live (20/20 PASS). Browser consent grant is the one remaining human step.
 
-**Prerequisites:** a logged-in test user; purposes exist (`communications`, `paperless-billing`, `terms`) `[LIVE]`.
+**Setup (once):**
+```bash
+node demo/uc15-consent/setup.js   # create purposes, user, DCR clients
+node demo/uc15-consent/run.js     # 14 PASS / 0 FAIL / 2 HUMAN
+node demo/uc15-consent/serve.js   # consent dashboard on :4151
+```
 
-**Click path (today)**
-1. Sign in → **My Profile** → **Communication preferences**: toggle Paperless billing and Marketing → **Save Settings**.
-2. Click the **Privacy & consent history** icon: each change appears as a consent record.
-3. **Download my data**: JSON of the profile.
-4. **Remove my account** (use a throwaway user): type name, confirm. Redirects to logout.
-5. Admin console → Privacy & consent → Purposes: the same purposes and their consent counts.
+**Browser consent grant (human step required for DUA-approved scenario):**
+1. `node ./bin/www` (if not running)
+2. Open http://localhost:3000, sign in as `ifc-demo-uc15-policyholder` (password in `demo/out/uc15.state.json`)
+3. Navigate: **My Profile → Communication preferences**
+4. Toggle on: paperless billing, marketing → **Save Settings**
+5. Check **Privacy & consent history** — consent records appear
 
-**Click path (once built)**
-1. Third party (repair shop) requests access to claims data → consent screen → approve with a 60-second duration.
-2. Call the third-party API: allowed. After expiry: denied.
-3. Run `export.js`: consent ledger as JSON/CSV for an audit request.
-4. Submit a deletion request in the DSAR stub: SLA timer starts, completes when consent and user are deleted.
+**Click path for the full IFC demo:**
+1. **Script**: `node demo/uc15-consent/run.js` — shows purpose lifecycle, DCR clients, DSP state
+2. **Admin dashboard** http://localhost:4151 — purposes, clients, consent ledger, DSP/DUA per user
+3. **Browser**: sign in as `ifc-demo-uc15-policyholder`, toggle preferences, save
+4. **Re-run run.js** — step H (DUA marketing) now shows `approved:true`
+5. **Export**: http://localhost:4151/export — consent ledger JSON
+6. **Admin console** → Security → Data Privacy → Purposes: shows the three UC-15 purposes with their duration and attribute counts
+7. **DSAR**: describe the integration pattern (record request → consent delete → user delete → stamp SLA)
 
-**Talk track:** "Consent is data with a purpose, a duration and a ledger. The user sees it, can withdraw it, and an auditor can export it."
+**Talk track:** "Consent is data with a purpose, a duration and a ledger. The user sees it, can withdraw it, and an auditor can export it on demand. Third-party access is gated by a consent record — no consent, no token. IFC's SLA clock runs in IFC's code; the IAM platform provides the create/read/revoke/delete APIs."
 
-**Honest limitation:** DSAR workflow and SLA timers are done by the stub, not by Verify.
+**Honest limitation:**
+- DPCM consent write requires a browser OIDC session (CSIBT0032E on this trial tenant — API token cannot write per-user consents). The app's `/consent` route works correctly in the browser.
+- DSAR SLA workflow and timers are stub code, not a Verify native feature.
+- `consentAction: 'always_prompt'` (token scope restriction) is available but not wired in this demo.
 
 ---
 

@@ -538,18 +538,25 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-15: Consent management (PIPEDA)
 
-**Status:** Bob can build almost all of it. This repo already has DPCM code.
+**Status: PARTIAL, BUILT (2026-11-12).** 20/20 `verify.js` PASS, 14/14 `run.js` PASS, torn down and rebuilt from zero. 2 human steps remain (browser consent grant, DUA post-grant check).
 
-**Proven `[LIVE]`:** purposes API works and the three purposes exist; DCR works.
+**Proven `[LIVE]`:**
+- Purpose lifecycle: create, publish (state=1), list, delete (with dissociation), version `[LIVE]`
+- Purpose-app association: `PATCH /dpcm-mgmt/config/v1.0/privacy/purpose-relationships` `[LIVE]` — must dissociate before delete (`CSIBT0012E` otherwise)
+- Three purposes with per-purpose attribute lists and `defaultConsentDuration`: claims-processing (365 days), fraud-analytics (180 days), marketing (90 days) `[LIVE]`
+- DCR: two third-party clients (repair-shop, comparison-site) with different scopes `[LIVE]`
+- Password-grant token for test user (ropc enabled on TrustMeInsurance) `[LIVE]`
+- DSP: `POST /dpcm/v1.0/privacy/data-subject-presentation` with `subjectId` — returns purpose metadata and consent state `[LIVE]`
+- DUA: `POST /dpcm/v1.0/privacy/data-usage-approval` with `subjectId + accessTypeId:read` — `approved:false` before grant, `approved:true` after browser grant `[LIVE]`
+- Admin consent ledger: `GET /dpcm-mgmt/config/v1.0/privacy/consents?userId=…` `[LIVE]`
 
-**Build steps**
-1. `demo/uc15-consent/setup.js`: create attributes and purposes: `claims_processing`, `fraud_analytics`, `marketing`, with `defaultConsentDuration` set; `POST /config/v1.0/privacy/purposes` `[DOCS]`; the app's `createPurpose` also publishes via `PATCH state=1`.
-2. Dynamically register two third-party clients: repair-shop and comparison-site (`POST /oauth2/register`, proven), each requesting different scopes.
-3. `run.js`: user consents (app `routes/consent.js` already stores consents via DPCM); issue short-lived consent (`endTime = now+60s`) with `PATCH /v1.0/privacy/consents` (`op:"add"`) `[DOCS]`; show enforcement after expiry.
-4. `export.js`: dumps `GET /config/v1.0/privacy/consents` filtered by subject + events into JSON/CSV.
-5. `stubs/dsar`: records a deletion request, starts an SLA timer, calls consent delete + user delete, stamps completion.
+**Key finding — CSIBT0032E `[LIVE 2026-11-12]`:** `PATCH /dpcm/v1.0/privacy/consents` for per-user consent write returns `"This API client can be used to create global consents only."` for both admin tokens and password-grant user tokens. Only a real browser OIDC session (cookie) can write per-user consents. The existing demo app `/consent` route works correctly. **DPCM write is a browser-path only on this trial tenant.**
 
-**Human steps:** `[HUMAN]` log in as the test user and click through the consent screen.
+**DSAR stub:** inline in `run.js` — record request, call consent + user delete APIs, stamp completion. Not a Verify native workflow.
+
+**Files:** `demo/uc15-consent/common.js`, `setup.js`, `run.js`, `verify.js`, `teardown.js`, `serve.js` (dashboard on :4151), `README.md`.
+
+**Human steps:** `[HUMAN]` (1) Sign in as `ifc-demo-uc15-policyholder` in the app, toggle communication preferences, save. (2) Re-run `run.js` to prove DUA passes after the browser grant.
 
 ---
 
@@ -583,7 +590,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 ## 5. Recommended build order (updated by live findings)
 
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
-2. **UC-13 and UC-14 built and verified**, UC-15 next (proven or nearly proven). **UC-09 built and verified** (25/25 live; mTLS not possible on this host).
+2. **UC-09, UC-13, UC-14, UC-15 built and verified.** UC-15 next human steps: browser consent grant (5 min).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
 4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
 5. **UC-10 (partial, built; branding and domains need IBM)**, **UC-11 (partial, built; native JIT needs IBM)**, then **UC-12, UC-05** (blocked or partial).
@@ -604,4 +611,5 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | `stubs/ifc-api/`, `demo/uc09-api/`, `demo/lib/idempotent.js` (`ensureStsClient` takes `actorRequired`) | UC-09: protected policy API stub (scope, allow-list, DPoP, policyholder rule for delegated tokens), `private_key_jwt` + DPoP machine clients, RFC 8693 on-behalf-of, key rotation, verify/teardown | Section 2, UC-09 |
 | `stubs/legacy-auth-store/`, `stubs/migration-gateway/`, `demo/uc11-migration/` | UC-11: legacy store stub (12 hash schemes), gateway JIT pattern, CSV bulk import, forced reset, rollback, 52 live checks, verify/teardown. No shared helper changed | Section 2, UC-11 |
 | `stubs/rules-engine/`, `stubs/policy-api/`, `demo/uc12-rebac/` | UC-12: OpenFGA native binary downloader/launcher and model, source-system stub with graph sync, policy gateway with reasoning path and audit log, presenter console and terminal client, 53 live checks, verify/teardown. No shared helper changed | Section 2, UC-12 |
+| `demo/uc15-consent/` (common, setup, run, verify, teardown, serve, README), `demo/teardown-all.js` (purposes + dissociate) | UC-15: DPCM purpose lifecycle, purpose-app association, DCR, DSP, DUA, admin consent export, DSAR stub; 20 PASS / 0 FAIL / 2 HUMAN; ropc on TrustMeInsurance for user-context token; key finding: CSIBT0032E blocks per-user consent write via API token | Section 2, UC-15 |
 
