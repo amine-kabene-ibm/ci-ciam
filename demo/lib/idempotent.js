@@ -300,6 +300,42 @@ async function ensureDcrClient(name, body, prev) {
   };
 }
 
+// CIBA application (UC-14) [LIVE 2026-11-12]: POST /v1.0/applications (templateId "1", applicationState true) with grantTypes.ciba "true" and
+// additionalConfig.backchannelSettings. Channels accepted: "push", "email" only (400 CSIAQ0509 otherwise). The secret stays readable by GET, so no
+// state file is needed. The app admits entitled users only (CSIAQ0279E): entitle customers with ensureAppEntitlement. A drifted app is recreated.
+async function ensureCibaApp(name, { channels = ['email'], sendAllKnownUserAttributes = true } = {}) {
+  if (!name.startsWith(PREFIX)) throw new Error(`application name must start with ${PREFIX}`);
+  const read = async () => {
+    const x = (await listApplications()).find((a) => a.name === name);
+    if (!x) return null;
+    const g = await api('GET', x._links.self.href);
+    if (g.status !== 200) throw new Error(`get application ${name}: HTTP ${g.status} cid=${g.cid}`);
+    return { appId: x._links.self.href.split('/').pop(), doc: g.data };
+  };
+  let cur = await read();
+  let created = false;
+  const bs = cur && cur.doc.providers.oidc.properties.additionalConfig.backchannelSettings;
+  const same = cur && cur.doc.applicationState === true && cur.doc.providers.oidc.properties.grantTypes.ciba === 'true' && bs
+    && JSON.stringify(bs.userAuthChannels) === JSON.stringify(channels)
+    && String(cur.doc.providers.oidc.properties.sendAllKnownUserAttributes) === String(sendAllKnownUserAttributes);
+  if (cur && !same) { await api('DELETE', `/v1.0/applications/${cur.appId}`); cur = null; }
+  if (!cur) {
+    const c = await api('POST', '/v1.0/applications', { body: {
+      name, templateId: '1', applicationState: true,
+      providers: { oidc: { properties: {
+        sendAllKnownUserAttributes: String(sendAllKnownUserAttributes),
+        grantTypes: { ciba: 'true' },
+        additionalConfig: { backchannelSettings: { deliveryMode: 'poll', supportUserCode: false, proximityCheck: 'disabled', userAuthChannels: channels } },
+      } } },
+    } });
+    if (c.status !== 201) throw new Error(`create CIBA application ${name}: HTTP ${c.status} cid=${c.cid}`);
+    cur = await read();
+    created = true;
+  }
+  const p = cur.doc.providers.oidc.properties;
+  return { appId: cur.appId, clientId: p.clientId, clientSecret: p.clientSecret, channels, created };
+}
+
 // Webhook management (/config/v1.0/webhooks/)
 async function listWebhooks() {
   const r = await api('GET', '/config/v1.0/webhooks/', { quiet: true });
@@ -350,5 +386,5 @@ module.exports = {
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
   updateApplication, ensurePolicy, deletePoliciesByPrefix, appIdOf, listAppEntitlements, ensureAppEntitlement, removeAppEntitlement,
-  listWebhooks, findWebhook, ensureWebhook, deleteWebhooksByPrefix,
+  listWebhooks, findWebhook, ensureWebhook, deleteWebhooksByPrefix, ensureCibaApp,
 };

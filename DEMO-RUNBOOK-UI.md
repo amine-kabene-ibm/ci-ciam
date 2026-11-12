@@ -39,7 +39,7 @@
 | 11 | Legacy migration | PARTIAL NOW (bulk, reset, rollback and JIT-pattern scripted 52/52 [LIVE]) | Terminal, login page, admin console | Native JIT needs Flow designer or Bridge (IBM); browser pass is a human step |
 | 12 | ReBAC | **PARTIAL NOW**: scripted 53/53 `[LIVE]`, `verify.js` 16 PASS / 0 FAIL / 4 HUMAN; browser look is a human step | Gateway console in a browser (`127.0.0.1:4170`) or terminal (`cli.js`), admin console (users) | Not a Verify-native feature: Verify authenticates, OpenFGA (open source, stand-in) authorizes; the "IdP calls the rules engine while minting the token" variant is not possible on this tenant (built-in attribute functions only) |
 | 13 | Broker lifecycle, immediate revocation | **READY NOW**: scripted 18/18 `[LIVE]`, `verify.js` PASS; interactive ops queue dashboard on `:4040` (`serve.js`) | Admin console (users, events), terminal (`run.js`), ops queue UI (`:4040`) | Webhook delivery from SaaS to local environment needs a public tunnel (`[HUMAN]`) |
-| 14 | CIBA agent-initiated | NEEDS BUILD + human mailbox/phone | Agent page, caller's email/phone | Approval is a real human action |
+| 14 | CIBA agent-initiated | **READY NOW** for the e-mail channel (22/22 scripted + 8/8 with a real approval `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) | Agent console in a browser (`localhost:4140`), presenter mailbox, admin console events | Approval is a real human action; IFC's example is a push, only e-mail is proven; no per-agent admin role modelled |
 | 15 | Consent (PIPEDA) | PARTIAL NOW (comm. prefs, consent history, download, delete) / NEEDS BUILD (third parties, expiry, DSAR) | Demo app, admin console | DSAR SLA tracking is the stub's job, not Verify's |
 
 ---
@@ -497,22 +497,24 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-14: CIBA agent-initiated authentication
 
-**Readiness:** NEEDS BUILD (agent page) + human approval.
+**Readiness:** READY NOW for the e-mail channel (`verify.js` 22 automated + 8 human-approval checks PASS). NEEDS HUMAN SETUP for push (phone with IBM Verify).
 
-**Prerequisites:** CIBA app (enabled with `applicationState:true`); `/agent/verify` page; a test user whose email you can read, or a registered phone.
+**Prerequisites:** `node demo/uc14-ciba/setup.js`, then `node demo/uc14-ciba/serve.js` (agent console on `http://localhost:4140`). Presenter mailbox open in another window. Customer password: `node -e "console.log(require('./demo/out/uc14.state.json').users.marie.password)"`. Rehearse once; the e-mail takes a few seconds.
 
 **Click path**
-1. Agent window → `/agent/verify` → enter the customer's username → **Verify customer**.
-2. Binding message shows: "IFC agent #482 verifying your identity".
-3. Customer (phone/email) receives the request → **Approve**.
-4. Agent page switches to **Verified**. **Unlock account** becomes available.
-5. Admin console → Events: audit trail with the binding message.
+1. Browser tab 1, `http://localhost:4140`. Type `ifc-demo-uc14-marie`, click **Verify customer**. Status turns **pending**; the page shows the message the customer will see ("IFC agent 482 is verifying your identity").
+2. Browser tab 2, the presenter mailbox, as the customer: open the new "IBM Verify" e-mail. Sign in as `ifc-demo-uc14-marie` and approve. (The e-mail shows the agent's message.)
+3. Tab 1: within about 5 s the status turns **verified** (a countdown shows the 5-minute window).
+4. Click **Read caller profile**: directory data plus the Client 360 stub. Before approval both buttons are disabled; the API also answers 403.
+5. To show **Unlock account**: run `node demo/uc14-ciba/lock.js` in a terminal (6 wrong passwords lock Marie) **after** the approval, then click **Unlock account**. Result: `wasLocked: true, nowLocked: false`, and the customer must choose a new password at next sign-in.
+6. Click **Refresh audit**: the CIBA token event with the binding message, the caller sign-in, and "N still pending poll events hidden".
+7. Admin console, Reports/Events: the same entries from Verify's side.
 
-**Talk track:** "The agent starts the verification, the customer approves on their own device. The agent never handles credentials."
+**Talk track:** "The agent starts the verification, the customer approves on their own device. The agent never handles a credential, and every action in the console depends on that approval. The unlock sets a temporary password the customer must replace: the agent never knows a usable one."
 
-**If it breaks:** Email approval link slow: use push after registering a phone.
+**If it breaks:** e-mail late: wait 30 s and refresh the mailbox; if the request expired (15 min), click Verify again. `run.js --approve` prints a `(ref XXXX)` to tell requests apart; the console does not, so approve the NEWEST e-mail. Locked account and no e-mail: lock only after the approval (see limitation).
 
-**Honest limitation:** Approval is a real human action. Do not point CIBA at real customers.
+**Honest limitation:** (1) The approval is a real person using a real mailbox. (2) IFC's example is a **push notification**; only the **e-mail** channel is proven here, push needs a phone with IBM Verify enrolled `[HUMAN]`. (3) While an account was locked, **no approval e-mail arrived** in one test (cause not established), so lock after approval. (4) The console is a stub; the "verified 5 minutes" window is its own logic. (5) IFC's "agent has a role in the CIAM admin console" is not modelled. (6) Do not point CIBA at real customers.
 
 ---
 

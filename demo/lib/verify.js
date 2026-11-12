@@ -113,6 +113,9 @@ function oauthClient(clientId, clientSecret) {
       subject_token_type: TOKEN_TYPE, requested_token_type: TOKEN_TYPE,
     }),
     passwordGrant: (username, password) => post('/oidc/endpoint/default/token', { grant_type: 'password', username, password, scope: 'openid' }),
+    // CIBA (UC-14) [LIVE 2026-11-12]: /oauth2/ciba with HTTP Basic client auth -> {auth_req_id, expires_in, interval}; poll /oauth2/token.
+    ciba: (form) => post('/oauth2/ciba', form),
+    cibaToken: (authReqId) => post('/oauth2/token', { grant_type: 'urn:openid:params:grant-type:ciba', auth_req_id: authReqId }),
   };
 }
 

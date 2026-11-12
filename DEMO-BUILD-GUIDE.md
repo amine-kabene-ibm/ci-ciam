@@ -31,7 +31,7 @@ Everything below is tagged by how I know it.
 | 4 | Dynamic client registration `POST /oauth2/register` works (201) and `DELETE /oauth2/register/{id}` works (204). | UC-15 dynamic client demo is buildable. Also the quickest way to create test clients. |
 | 5 | `private_key_jwt` client registered via DCR with a JWKS; a signed client assertion with `aud = <tenant>/oauth2/token` returned a token. | UC-09 `private_key_jwt` is proven end to end. |
 | 6 | `tls_client_auth` client with certificate-bound access tokens registers fine (201). **The mTLS handshake was tested (UC-09, 2026-11-10): the edge sends no `CertificateRequest`, so no client certificate can be presented on this host [LIVE].** A `curl --cert` to the token endpoint returns 401 `CSIAQ0155E` for a dummy client, which is not a valid mTLS proof. | UC-09 does **not** claim mTLS. It uses `private_key_jwt` and DPoP. Only an IBM-side change (client-certificate edge option) could enable mTLS. |
-| 7 | CIBA app created via `POST /v1.0/applications` with `grantTypes.ciba=true` and backchannel settings (poll, email). **You must set `"applicationState": true`**, otherwise `/oauth2/ciba` returns `invalid_client`. With it enabled, `/oauth2/ciba` is reachable and returned `unknown_user_id` for a fake user. | UC-14 is buildable. The approval step needs a human (email link or phone). |
+| 7 | CIBA app created via `POST /v1.0/applications` with `grantTypes.ciba=true` and backchannel settings (poll, email). **You must set `"applicationState": true`**, otherwise `/oauth2/ciba` returns `invalid_client`. With it enabled, `/oauth2/ciba` is reachable and returned `unknown_user_id` for a fake user. **Superseded by finding 49:** the full flow, including the e-mail approval, has now been run. | UC-14 is built. The approval step needs a human (email link or phone). |
 | 8 | SCIM `PATCH active=false` returns 204. A token issued earlier then introspects `active:false` **within the same second** and a new token request returns `CSIAQ0281E The account is not active.` | **UC-13 core claim is proven:** deactivation immediately kills existing access tokens and blocks new logins. |
 | 9 | `DELETE /v1.0/auth/sessions/{userId}` returns 204. `GET` on sessions with no session returns `{}`. | Session revoke API works. A real browser session is needed to see it killed (human step). |
 | 10 | SCIM filter `emails.value eq "..."` finds an existing user. | UC-01 duplicate detection is buildable. |
@@ -73,6 +73,7 @@ Everything below is tagged by how I know it.
 | 46 | **Tokens and directory facts for authorization (UC-12):** the password-grant **access token is opaque** (not a JWT); the ID token is a JWT. `POST /oauth2/introspect` returns `sub` = the Verify user id (e.g. `8A60005FSE`), `preferred_username`, `active`. An **STS client can introspect** tokens issued to another client (200, `active:true`), so the gateway needs no admin credential. With `sendAllKnownUserAttributes: "true"` on the application the ID token and `/userinfo` also carry `department`, `job_title`, `email`, `given_name`, `family_name`, `uid`. SCIM `PATCH` with `op: add` on `urn:ietf:params:scim:schemas:extension:enterprise:2.0:User:department` / `:employeeNumber` and on `title` returns 204 and replaces the value; a 2-entitlement API client (`readUsers`, `manageUsers`) is enough. A token issued before a SCIM `active=false` PATCH introspects `active:false` at once. | The gateway authenticates by introspection and authorizes by the engine on `sub`. Directory attributes are a snapshot in the token: a token issued before a move still says the old brokerage. |
 | 47 | **No token-time callout and no custom attribute source on this tenant (UC-12):** `GET /v1.0/attributefunctions` lists 13 built-ins only (`uppercase`, `lowercase`, `base64Encode/Decode`, `encodeURI*`, `decodeURI*`, `generateUuidIfNull`, `currentTimeInSeconds/Milliseconds`, `sha256`, `sha512`); `POST` on it is 405 `CSIAK4305E`. `POST /v1.0/attributes` accepts only source types `STATIC, CREDENTIAL, SCHEMA, PROFILE, ORG` (400 `CSIBE2716E`); `rule` is deprecated (400 `CSIBE2758E`). Putting `tokenResponseMap` in the application's `oidc.properties` is refused (400); no other placement was tried. | The PDF's "IdP calls the rules engine while minting the token" cannot be shown here. Say so; the request-time pattern is the demo. Whether `tokenResponseMap`/`introspectResponseMap` exist elsewhere in the model is `[INFER]` unproven. |
 | 48 | **A relationship model that survives "a broker who leaves" (UC-12):** `servicing = placed_by and member from brokerage` (an intersection) means the placing broker keeps access only while still a live member of the client's brokerage; deleting one membership tuple removes access on the next check, without touching client records. `viewer = servicing or manager from brokerage`; `editor = servicing` (a policy choice). OpenFGA v1.22.1 supports `list-objects` and `list-users` (the "all resources a user can access" and "who can access" asks). 8,120 relationships loaded in ~0.8 s; check ~1 to 6 ms, list-objects ~1 to 2 ms on this laptop, in memory (a hint, not a benchmark). | The model is in `stubs/rules-engine/model.js`. IFC's real roles and volumes are unknown. |
+| 49 | **CIBA end to end (UC-14, 2026-11-12):** app settings go under `providers.oidc.properties` (see UC-14 section; `additionalConfig` beside `properties` is a 400). Channels are only `push` and `email`. The app admits **entitled users only** (403 `CSIAQ0279E`). `login_hint` is the user name only. A real e-mail approval returned tokens; the poll and audit behave as documented. **No unlock endpoint:** only a SCIM password replace clears a lockout. The events API needs `readReports`. A locked account still gets a 200 request but **no e-mail arrived** (observed once). | UC-14 is demonstrable on e-mail; push needs a phone. The lock is applied after the approval in the demo. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -509,21 +510,29 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-14: CIBA agent-initiated authentication
 
-**Status:** Bob builds it. The approval is `[HUMAN]` (email link or phone push).
+**Status: BUILT and VERIFIED, e-mail channel** (2026-11-12). `demo/uc14-ciba/verify.js` 22/22 automated + 8/8 human-approval checks PASS (`demo/out/uc14.json`, 30 checks, 0 failed). Push channel is `[HUMAN]` (phone) and was not run. The approval itself is always `[HUMAN]`.
 
-**Proven `[LIVE]`:** CIBA app creation shape and `applicationState:true`; `/oauth2/ciba` returns `unknown_user_id` for unknown users (so the app and credentials are valid).
+**Proven `[LIVE]`**
+- CIBA app by API: `POST /v1.0/applications` with `templateId:"1"`, `applicationState:true`, and **inside `providers.oidc.properties`**: `grantTypes.ciba:"true"` and `additionalConfig.backchannelSettings{deliveryMode:"poll", supportUserCode:false, proximityCheck:"disabled", userAuthChannels:["email"]}`. **Correction to the earlier build step:** `additionalConfig` placed beside `properties` (as the old step 1 read) returns an empty 400. Client id/secret come back by `GET /v1.0/applications/{id}` (helper `ensureCibaApp`).
+- Full real flow: `POST /oauth2/ciba` (Basic client auth) -> `{auth_req_id, expires_in, interval:5}` -> poll `POST /oauth2/token` -> `authorization_pending` (400, `CSIAQ0249E`) -> the caller gets an e-mail showing the binding message, signs in and approves -> the poll returns an access token and an ID token (28 s in the recorded run). Verify userinfo of the token gives the approver; the console compares it with the caller.
+- Errors: unknown user 400 `unknown_user_id` (`CSIAQ5297E`); no hint 400 `CSIAQ5301E`; bad client secret 401 `invalid_client`; **not entitled 403 `CSIAQ0279E`** (same as UC-10: entitle each user with `ensureAppEntitlement`); expired or invented `auth_req_id` 400 `expired_token` (`CSIAQ5298E`).
+- `login_hint` = user name (case-insensitive). E-mail address and user id are refused. `requested_expiry` honoured (default 1800 s). Deactivated user is "not found".
+- Channels: **only `push` and `email`** (400 `CSIAQ0509` for `sms`). `push` is accepted on the app but a request fails with 400 `CSIAQ5306E` until the user is enrolled in IBM Verify.
+- Agent action "unlock": **no unlock endpoint** (404). A SCIM `PATCH` of `pwdAccountLockedTime` does not clear the lock. A **password replace** (`PATCH /v2.0/Users/{id}`, `op:replace`, `path:password`, 204) does; without `usershouldnotneedtoresetpassword:true` the customer must choose a new password at next sign-in (`CSIAQ0267E`). That is the right behaviour for an agent unlock: the agent never knows a usable password. Same password again is refused (`PWD_IN_HISTORY`).
+- Lockout: 6 wrong passwords lock the account; the correct password is then refused (`CSIAQ0264E`).
+- Audit (`GET /v1.0/events`): the successful CIBA token event carries `binding_message`; the caller sign-in is logged; every pending poll is a failed SSO event (`CSIAQ0249E`), so the console collapses them into a count. **Needs `readReports`** on the API client (with `readUsers` + `manageUsers` only: 403 `CSIAK4300E`).
+- The agent console client holds 3 entitlements (`readUsers`, `manageUsers`, `readReports`); the 165-entitlement admin client is not used at runtime.
 
-**Build steps**
-1. `setup.js`: `POST /v1.0/applications` with `name`, `templateId:"1"`, `applicationState:true`, `providers.oidc.properties.grantTypes.ciba:"true"` and `additionalConfig.backchannelSettings{deliveryMode:"poll", supportUserCode:false, proximityCheck:"disabled", userAuthChannels:["email"]}`. Read the client id/secret via `GET /v1.0/applications/{id}`.
-2. Agent console `GET /agent/verify` in the demo app: form for username; backend `POST /oauth2/ciba` with `scope=openid`, `login_hint`, `binding_message="IFC agent #482 verifying your identity"`; poll `POST /oauth2/token` with `grant_type=urn:openid:params:grant-type:ciba&auth_req_id=…` every `interval` seconds until success or `expired`.
-3. After success: show "verified" and enable "Unlock account" (`PATCH /v2.0/Users/{id}` `active:true`) and an audit panel (events API; binding message is attached to SSO events `[DOCS]`).
-4. Switch channel to `["push","email"]` once a phone is registered.
+**What was built:** `demo/uc14-ciba/{common,config,setup,run,serve,lock,verify,teardown}.js` + README, `stubs/agent-console/{agent,server}.js` (agent console on `http://localhost:4140`), `ensureCibaApp` in `demo/lib/idempotent.js`, `ciba`/`cibaToken` in `oauthClient`. Console logic is in one module used by both `run.js` and the web page.
 
-**Human steps**
-- `[HUMAN]` the caller opens the verification email link (or approves the push).
-- Use a test user whose email you control; **do not point CIBA at real customers**.
+**Not proven / left for you**
+- `[HUMAN]` Push channel: install IBM Verify on a phone, enrol the demo user (UC-06 `enroll-phone.js` flow), set the app to `channels:['push','email']` via `ensureCibaApp`. IFC's own example is a push, so this is worth 10 minutes.
+- `[HUMAN]` **Locked caller:** while the account was locked, **no approval e-mail was received** for several requests sent in a row (observed once, cause not established; the request itself is accepted with 200). The demo therefore locks the account only AFTER the approval.
+- `[INFER]` IFC precondition "agent has a role in the CIAM admin console" is not modelled. The stub uses its own API client. Verify's delegated-admin roles (UC-10 finding 32) are the place to show per-agent roles.
+- The 5-minute "verified" window is console logic in memory, not a Verify feature.
+- `proximityCheck` (country/state/city) not exercised.
 
-**Verification:** `auth_req_id` issued, polling returns `authorization_pending` then tokens; audit event visible.
+**Run it:** `node demo/uc14-ciba/setup.js`, `node demo/uc14-ciba/run.js` (22 checks, ~30 s, no human), `node demo/uc14-ciba/run.js --approve` (adds the real approval; approve the e-mail whose message ends with the printed `(ref XXXX)`), `node demo/uc14-ciba/verify.js`, live demo `node demo/uc14-ciba/serve.js` then `http://localhost:4140`.
 
 ---
 
@@ -574,7 +583,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 ## 5. Recommended build order (updated by live findings)
 
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
-2. **UC-13, UC-14, UC-15** (proven or nearly proven). **UC-09 built and verified** (25/25 live; mTLS not possible on this host).
+2. **UC-13 and UC-14 built and verified**, UC-15 next (proven or nearly proven). **UC-09 built and verified** (25/25 live; mTLS not possible on this host).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-01 Track A, UC-03**.
 4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
 5. **UC-10 (partial, built; branding and domains need IBM)**, **UC-11 (partial, built; native JIT needs IBM)**, then **UC-12, UC-05** (blocked or partial).
