@@ -2,7 +2,8 @@
 // Deletes every tenant object whose name starts with "ifc-demo-". Safe to re-run.
 //   node demo/teardown-all.js            delete everything and list what is left
 //   node demo/teardown-all.js --list     only list (dry run)
-// Covers: users, groups, API clients, applications (includes DCR clients), access policies, STS clients, branding themes.
+// Covers: users, groups, API clients, applications (includes DCR clients), access policies, STS clients, branding themes, SMS providers, webhooks, privacy purposes, custom attributes.
+// FIDO2 registrations go with their user.
 // Not covered on purpose: objects the base app creates in /setup (TrustMeInsurance, MFAGroup, ...).
 const { api, PREFIX } = require('./lib/verify');
 const idem = require('./lib/idempotent');
@@ -10,7 +11,7 @@ const idem = require('./lib/idempotent');
 const listOnly = process.argv.includes('--list');
 
 async function inventory() {
-  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], webhooks: [], purposes: [], attributes: [] };
+  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], smsProviders: [], webhooks: [], purposes: [], attributes: [] };
 
   const u = await api('GET', '/v2.0/Users', { query: { filter: `userName sw "${PREFIX}"`, attributes: 'id,userName', count: 200 } });
   inv.users = ((u.data && u.data.Resources) || []).map((x) => ({ id: x.id, name: x.userName }));
@@ -44,6 +45,8 @@ async function inventory() {
   const t = await api('GET', '/v1.0/branding/themes');
   inv.themes = ((t.data && t.data.themeRegistrations) || []).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
 
+  inv.smsProviders = (await idem.listSmsProviders()).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
+
   const w = await api('GET', '/config/v1.0/webhooks/', { quiet: true });
   inv.webhooks = ((w.data && w.data.webhooks) || []).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
 
@@ -66,6 +69,7 @@ async function main() {
     for (const x of inv.policies) console.log('  delete policy     ', x.name, (await api('DELETE', `/v5.0/policyvault/accesspolicy/${x.id}`, { quiet: true })).status);
     for (const x of inv.stsClients) console.log('  delete sts client ', x.name, (await api('DELETE', `/v1.0/sts/oauth/clients/${x.id}`, { quiet: true })).status);
     for (const x of inv.themes) console.log('  delete theme      ', x.name, (await api('DELETE', `/v1.0/branding/themes/${x.id}`, { quiet: true })).status);
+    for (const x of inv.smsProviders) console.log('  delete sms provider', x.name, (await api('DELETE', `/config/v1.0/smsproviders/${x.id}`, { quiet: true })).status); // before its webhook
     for (const x of inv.webhooks) console.log('  delete webhook    ', x.name, (await api('DELETE', `/config/v1.0/webhooks/${x.id}`, { quiet: true })).status);
     for (const x of inv.purposes) {
       // Must dissociate from any app before deleting [LIVE 2026-11-12: CSIBT0012E otherwise]

@@ -27,7 +27,7 @@
 | UC | Topic | Readiness today | UI used | Honest limitation to state |
 |---|---|---|---|---|
 | 01 | Self-service registration, progressive profiling | **READY NOW** for the scripted path (52/52 `[LIVE]`, `verify.js` PASS: real Verify e-mail OTP, duplicates, Client 360 link, progressive stages) / NEEDS HUMAN for a real browser pass with your own mailbox | Registration portal in a browser (`localhost:4011`), your mailbox, admin console (users, group) | Flow designer is not enabled and there is no self-registration config API, so the wizard is IFC-style code around Verify's APIs, not a no-code Verify flow; custom attributes do not reach the ID token (the Client 360 id travels as `employee_id`); no passkey/SMS choice at signup |
-| 02 | Passkeys, OTP, TOTP fallback | NEEDS BUILD + HUMAN SETUP | Demo app over HTTPS, browser authenticator | Needs `mkcert` + hostname; BYO SMS gateway attach unverified |
+| 02 | Passkeys, OTP, TOTP fallback | **READY NOW** for the scripted path (46/46 `[LIVE]`, `verify.js` PASS: software passkey on the real tenant, AAL1/2/3 policies, real e-mail OTP, authenticator-app fallback, own SMS gateway) / NEEDS HUMAN SETUP for a real platform passkey (Touch ID) | Terminal, 3 AAL portals on :4021-4023, Verify self-care page, admin console | Passkey-only (no password) sign-in is refused by this tenant (IBM must enable); IBM SMS blocked, own gateway works; real device prompt not rehearsed |
 | 03 | Risk-aware recovery, agent-assisted | PARTIAL NOW (app forgot-password) / NEEDS BUILD (agent console) | Demo app, agent page, admin console events | No AI risk score without Adaptive access |
 | 04 | Trusted devices, push, revoke | NEEDS IBM / HUMAN SETUP | IBM Verify app on phone, admin console | Two registrations for one user unconfirmed |
 | 05 | Adaptive risk and fraud | PARTIAL NOW (policy view) / NEEDS BUILD + IBM | Admin console, risk stub | Threat detection inactive; IFC signals go in as `external_risk` webhook, not as Trusteer model features |
@@ -132,37 +132,42 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-02: Passkeys / FIDO2 with OTP and TOTP fallback
 
-**Readiness:** NEEDS BUILD + HUMAN SETUP.
+**Readiness:** READY NOW for the scripted path (terminal, 46/46 `[LIVE]`). NEEDS HUMAN SETUP (15 min) for a real platform passkey: Touch ID / Windows Hello is not scripted.
 
 **Prerequisites**
-- `mkcert -install`; `127.0.0.1 ifc-demo.local` in `/etc/hosts`; app served on `https://ifc-demo.local:3443`.
-- FIDO2 relying party created for that origin.
-- A browser with a platform authenticator (Touch ID / Windows Hello) or a security key.
-- Rehearse registration once, so you know how the OS prompts.
+- `node demo/uc02-passkeys/setup.js && node demo/uc02-passkeys/serve.js` (portals on `http://localhost:4021` AAL1, `:4022` AAL2, `:4023` AAL3). No `mkcert`, no hosts entry: the passkey lives on the tenant's own domain.
+- Users `ifc-demo-uc02-alice` (will have a passkey) and `ifc-demo-uc02-bob` (no passkey). Passwords and TOTP secrets in `demo/out/uc02.state.json`.
+- For the terminal path only: `node demo/uc02-passkeys/run.js` (60-90 s).
 
-**Click path**
-1. Customer window → `https://ifc-demo.local:3443` → sign in with password (AAL1).
-2. Profile → **Security preferences** → **Add a passkey** (once built) → approve the Touch ID prompt.
-3. Sign out. Sign in again → **Use a passkey** → approve → no password typed.
-4. Show fallback: choose **Use another method** → email OTP → code → in.
-5. Show TOTP: Profile → **Add authenticator app** → scan the QR with any authenticator app → sign out → sign in using the TOTP code.
-6. Show assurance levels: open the three demo apps (AAL1 / AAL2 / AAL3). Each policy asks for a different minimum method.
+**Click path (real browser, once, ~10 min)**
+1. Open `https://trialverify.verify.ibm.com/usc/`, sign in as alice, **Add a passkey**, approve Touch ID. (This is Verify's own screen; labels may differ, note them.)
+2. `http://localhost:4023` (AAL3, payments and claims) → Sign in → password → **passkey prompt** → in. The page shows `amr: password, fido2, 2fa`.
+3. `http://localhost:4022` (AAL2) → Sign in → password → choice page → **Use another method** → authenticator app or e-mail code → in (`amr` shows `totp` or `emailotp`).
+4. Sign in to `http://localhost:4023` as **bob** (no passkey): refused, "none of the permitted authentication factors are configured". Same bob at `:4022` signs in with a code. That is the fallback story.
+5. `http://localhost:4021` (AAL1, everyday) → password only. Then `/settings`: passkey list and the "add a passkey" banner (disappears once a passkey exists).
+6. Admin console → Security → Access policies: the three `ifc-demo-uc02-policy-*` policies. Applications → each `ifc-demo-uc02-app-aal*` shows its policy.
+
+**Terminal path (no browser, always works)**
+`node demo/uc02-passkeys/run.js` prints the 46 checks in scenarios A-I: policies, register a passkey, add a second device, sign in at AAL3, forged/replayed/phishing attempts refused, fallback at AAL2 with a real e-mail, AAL1, nudge, own SMS gateway. Say aloud that the device is a software authenticator.
 
 **Talk track**
-- "Passkey is the strongest, phishing-resistant method. OTP and TOTP are fallbacks controlled by policy."
-- "Assurance level is a policy, not code. Moving a line of business from AAL2 to AAL3 is a policy change."
-- "SMS can be routed to your own provider through the external SMS webhook." (Say this only after the attach is tested.)
+- "Passkey is phishing-resistant: the key is bound to our domain. The test shows a look-alike site and a replayed answer both refused."
+- "Assurance level is a policy, not code: AAL1 password, AAL2 password plus any second factor, AAL3 password plus passkey only. Moving a line of business up is a policy change."
+- "A customer with no passkey-capable device is not locked out: the same journey offers the authenticator app or an e-mail code, still policy-controlled."
+- "OTP delivery: e-mail is Verify's. For SMS you plug in your own gateway: a webhook plus an SMS provider; Verify then sends the message to your URL. We proved it live." (Do not say IBM delivers SMS: it is blocked on this trial.)
+- "Nudging to enroll is your portal logic over Verify's APIs: ask how many passkeys the customer has, show the banner."
 
 **Show in admin console**
 - Security → Access policies: the three policies and their allowed methods.
-- Directory → Users → the user → registered authentication methods (passkey, TOTP).
-- Events: sign-in events listing the factor used.
+- Directory → Users → alice → registered authentication methods (passkeys, TOTP).
+- Integrations / Webhooks and SMS providers (only while `setup.js --sms-url` is active).
 
 **If it breaks**
-- Browser says insecure context: you are on `localhost` or an untrusted cert. Use the `ifc-demo.local` HTTPS URL.
-- Passkey prompt fails: use a second browser or a hardware key.
+- Passkey prompt fails in the browser: use a second browser or a hardware key, or fall back to the terminal path.
+- AAL3 sign-in shows an error page for bob: that is the expected refusal.
+- SMS check shows SKIP in `run.js`: no tunnel; run again with network access (uses `ssh nokey@localhost.run`).
 
-**Honest limitation:** WebAuthn requires a real hostname and HTTPS. The exact policy method name for passkeys and the external SMS attach are unverified.
+**Honest limitation:** passkey-only sign-in (no password typed first) is refused on this tenant (`CSIAH0026E`); today the passkey is the second factor after the password. IBM must enable it. IBM's own SMS and voice OTP are blocked; the bring-your-own gateway works. On a choice page Verify lists methods in its own order, so "passkey first" is exact only at AAL3. Required AAL per transaction type is a per-application policy plus portal steering, not a per-transaction setting in Verify. The real device prompt has not been executed.
 
 ---
 

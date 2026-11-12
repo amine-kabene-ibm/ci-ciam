@@ -420,11 +420,59 @@ async function deleteWebhooksByPrefix(prefix) {
   return out;
 }
 
+// ---- FIDO2 / passkeys and the external SMS gateway (UC-02) [LIVE 2026-11-12] ----
+// The tenant's default relying party (rpId = tenant host) is the only one the Verify-hosted pages use; never create or delete it.
+async function defaultFidoRp() {
+  const r = await api('GET', '/config/v2.0/factors/fido2/relyingparties');
+  const rp = ((r.data && r.data.relyingparties) || []).find((x) => x.rpId === new URL(process.env.OIDC_CI_BASE_URI).hostname);
+  if (!rp) throw new Error(`default FIDO2 relying party not found: HTTP ${r.status} cid=${r.cid}`);
+  return rp;
+}
+async function listFidoRegistrations(userId) {
+  const r = await api('GET', '/v2.0/factors/fido2/registrations', { query: { search: `userId="${userId}"` }, quiet: true });
+  return (r.data && r.data.fido2) || [];
+}
+async function deleteFidoRegistrations(userId) {
+  let n = 0;
+  for (const x of await listFidoRegistrations(userId)) { await api('DELETE', `/v2.0/factors/fido2/registrations/${x.id}`, { quiet: true }); n++; }
+  return n;
+}
+
+// BYO SMS gateway = a realtime webhook (purpose external_sms) + an SMS provider that points at it. Creating the provider is not enough:
+// it starts disabled and is enabled with a full-body PUT (capability "sms", non-empty description). While it is enabled, SMS OTP calls
+// return 201 instead of 429 CSIAP3545E, and Verify POSTs the message to the webhook URL. The provider must be deleted BEFORE its webhook.
+async function listSmsProviders() {
+  const r = await api('GET', '/config/v1.0/smsproviders', { quiet: true });
+  return (r.data && r.data.smsproviders) || [];
+}
+async function ensureSmsGateway(name, url) {
+  if (!name.startsWith(PREFIX)) throw new Error(`sms gateway name must start with ${PREFIX}`);
+  const hook = await findWebhook(name);
+  let provider = (await listSmsProviders()).find((p) => p.name === name);
+  if (hook && provider && provider.enabled && provider.webhookId === hook.id && (hook.urls || [])[0] === url) return { webhookId: hook.id, providerId: provider.id, created: false };
+  await deleteSmsGatewaysByPrefix(name);
+  const w = await ensureWebhook(name, { type: 'realtime', purpose: ['external_sms'], urls: [url] });
+  const p = await api('POST', '/config/v1.0/smsproviders', { body: { name, webhookId: w.id } });
+  if (p.status !== 201) throw new Error(`create sms provider ${name}: HTTP ${p.status} cid=${p.cid}`);
+  const e = await api('PUT', `/config/v1.0/smsproviders/${p.data.id}`, { body: { name, webhookId: w.id, description: 'IFC own SMS gateway demo', enabled: true, capabilities: ['sms'], userContextAttributes: [] } });
+  if (e.status !== 204) throw new Error(`enable sms provider ${name}: HTTP ${e.status} cid=${e.cid}`);
+  return { webhookId: w.id, providerId: p.data.id, created: true };
+}
+async function deleteSmsGatewaysByPrefix(prefix) {
+  const out = [];
+  for (const p of (await listSmsProviders()).filter((x) => x.name.startsWith(prefix))) {
+    out.push({ name: p.name, kind: 'provider', status: (await api('DELETE', `/config/v1.0/smsproviders/${p.id}`, { quiet: true })).status });
+  }
+  for (const w of await deleteWebhooksByPrefix(prefix)) out.push({ ...w, kind: 'webhook' });
+  return out;
+}
+
 module.exports = {
   findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix, ensureGroupMember,
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,
   updateApplication, ensurePolicy, deletePoliciesByPrefix, appIdOf, listAppEntitlements, ensureAppEntitlement, removeAppEntitlement,
   listWebhooks, findWebhook, ensureWebhook, deleteWebhooksByPrefix, ensureCibaApp,
+  defaultFidoRp, listFidoRegistrations, deleteFidoRegistrations, listSmsProviders, ensureSmsGateway, deleteSmsGatewaysByPrefix,
   listTenantAttributes, ensureCustomAttribute, deleteAttributesByPrefix,
 };

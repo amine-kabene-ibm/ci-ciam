@@ -40,7 +40,7 @@ Everything below is tagged by how I know it.
 | 13 | Threat detection config exists but is **`status: inactive`** (5 rules incl. credential stuffing, brute force). | UC-05 threat intel needs IBM to activate it. |
 | 14 | Webhook purposes available: `identity_proofing`, `external_mfa`, `external_risk`, `notifications`, `external_sms`. | **New finding:** `external_risk` lets a policy call an external information point, and `external_sms` routes SMS to an external provider. Both help UC-05 and UC-02 (see those sections). |
 | 15 | STS client create works (201) with `tokenSettings.signingAlg` set (the error `CSIAQ0134E` says it's required). | UC-09 token exchange / UC-07 buildable. UC-07 later proved the exchange itself (finding 26). |
-| 16 | FIDO2 relying party create works: `POST /v2.0/factors/fido2/relyingparties {"origin":"https://..."}` returns 200. | UC-02 buildable. `GET` on that path returns 405 (not a list endpoint). |
+| 16 | FIDO2 relying party (RP): the older `POST /v2.0/factors/fido2/relyingparties {"origin"}` returns 200 but creates nothing visible. **Correction (UC-02, 2026-11-12):** the real config API is `GET/POST /config/v2.0/factors/fido2/relyingparties` (list works; create needs the full body: `name, rpId, origins, enabled, webAuthn, metadataConfig, allowedAttestationFormats, allowedAttestationTypes, attestationCredProtect, pubKeyCredParams`, 201) and `DELETE .../{id}` (204). The earlier "405, not a list endpoint" was the wrong path. | The tenant already has a default RP: rpId = the tenant host. Use it; never delete it. See findings 54-60. |
 | 17 | `GET /v1.0/authenticators` returns 0 registrations. `GET /v1.0/authenticators/discovery` lists one client, "Verify Profile". | UC-04/06/14: no phone is registered yet. `[HUMAN]` |
 | 18 | Sub-tenant API returns 405 `CSIAG0746E`: "This tenant does not have a partner reseller offering enabled". | **Resolves the open UC-10 question:** sub-tenants are a **reseller** feature, not a per-brand admin feature. Not available. |
 | 19 | The token endpoint for `grant_type=password` is not allowed on the default app client. DCR clients can enable it. | Use DCR clients for scripted user logins in tests. |
@@ -78,6 +78,13 @@ Everything below is tagged by how I know it.
 | 51 | **Custom attribute creation (UC-01):** `POST /v1.0/attributes/` with `Content-Type: application/scim` returns 201 `{id}`. `schemaAttribute.scimName` must be **alphanumeric** (`client360_id`, `a-b`, `x_y` give 400 `CSIAI0096E`); `schemaAttribute.name` must be a free slot `customAttributeN`; `constraints.unique:true` is enforced on user create (400 `CSIAI0313E` "value ... already exists"). `DELETE /v1.0/attributes/{id}` 204. SCIM filter on a custom attribute needs the full URN prefix: `urn:ietf:params:scim:schemas:extension:ibm:2.0:User:customAttributes.<scimName> eq "x"`. | Names in the old guide (`postal_code`, `client360_id`) are not valid; use `client360Id`, `policyNumber`, `hasVehicle`. Postal code and language use the standard SCIM `addresses` and `preferredLanguage`. |
 | 52 | **Duplicate behaviour (UC-01):** a second `POST /v2.0/Users` with the same `userName` is 409 (case-insensitive). A different `userName` with the same e-mail is **201** (not blocked). | The e-mail / phone / policy duplicate rules cannot be left to Verify: they run in IFC's registration service with SCIM filters (`emails.value`, `phoneNumbers.value`, custom attribute). The `unique` attribute is the backstop. |
 | 53 | **E-mail OTP details (UC-01):** `POST /v2.0/factors/emailotp/transient/verifications {correlation, emailAddress}` 201; the e-mail reads `NNNN-NNNNNN` (first 4 = correlation); the person types the 6 digits; 5 attempts (`retries:4`); wrong code 400 `CSIBN0021E`, 5th wrong `CSIBN0080E`. The API client needs **`authnAnyUser`** (with only `generateOTP`: 403 `CSIAK4300E`); adding a user to a group needs **`manageGroupMembers`**. SCIM errors carry the code in `detail` (e.g. `CSIAI0020E`), OTP errors in `messageId`. | Least-privilege registration client = `readUsers, manageUsers, authnAnyUser, manageGroupMembers`. Disposable mail.tm inboxes receive the Verify e-mail (4 s to about 2 min), so a script can read the real OTP without a human. |
+| 54 | **Passkey ceremony works from a script `[LIVE]` (UC-02).** Registration: `POST /v2.0/factors/fido2/relyingparties/{rp}/attestation/options {userId, authenticatorSelection:{residentKey,userVerification}, attestation:"none"}` returns the options (user id is the Verify id), then `POST .../attestation/result {id, rawId, type, response:{attestationObject, clientDataJSON}, nickname, enabled}`: `nickname` is required and extra fields (`transports`, `clientExtensionResults`) are rejected `CSIBN0005E`; 200 with `validated:true`. `GET /v2.0/factors/fido2/registrations?search=userId="X"` lists, `DELETE .../registrations/{id}` 204 (PATCH 405). Assertion: `.../assertion/options` + `.../assertion/result` (counter increments; wrong signature 400 `FID003E`; unknown credential `FID031E`; replayed registration `FID024E`; wrong origin `FID003E`). | A software authenticator (`demo/lib/webauthn.js`) proves the whole server side without a phone. Only the OS prompt and a platform/hardware key stay `[HUMAN]`. |
+| 55 | **Passkey as a SECOND factor on the hosted login works `[LIVE]`.** Policy `ACTION_MFA_ALWAYS` with `authnMethods:["fido2",...]` (the v5 name is `fido2`; the policy API stores the list alphabetically). One allowed method: Verify goes straight to `authentication/mfa/fido2/passwordless_fido2.html` (serverOptions meta: challenge, rpId, allowCredentials). Several: `.../mfa_selection/combined_mfa_selection.html` with one `<meta name="otpMethod" content="label\|id\|id\|\|\|type">` per enrolled method (`fido2_0`, `totp_0`, `email_0`). Choose with POST `operation=generate&otp.user.otp-method.id=<id>`; passkey answer = POST `operation=authenticate&assertionResponse=<JSON>`; "use another method" = `operation=restart`. The ID token `amr` is `[password, fido2, 2fa]`. A user with no usable method gets `CSIAH0640E`. | AAL3 = passkey only, AAL2 = passkey or code, AAL1 = password: three policies, three apps. |
+| 56 | **Passkey-only (no password) sign-in is NOT available on this tenant `[LIVE]` `[INFER]` cause.** Policies with `containsFirstFactor:true` + rule `firstFactor:true` + `fido2` are accepted (201) but the login page `idSourcesMeta` keeps `passwordless:{qr:false,fido:false}`; the passkey route `GET /authsvc/mtfim/sps/apiauthsvc?PolicyId=urn:ibm:security:authentication:asf:fido2&identity_source_id=<id>` then the assertion returns 400 `CSIAH0026E "You are not authorized to use passkey for passwordless login"`. About 33 guessed identity-source property keys and policy variants did not change it. | IBM-side or console-only setting. Passkey is a second factor today. Ask IBM (section 4). |
+| 57 | **E-mail OTP on the hosted page uses different field names `[LIVE]`.** The TOTP page takes `otp`; the e-mail page takes `otp.user.otp` (the six digits after the dash) and a hidden `otp.user.otp-hint` (the four-digit number shown on the page, first part of `NNNN-NNNNNN`). Posting only `otp` gives `CSIAH2417E`. Mail arrives in 2-5 s (mail.tm). | Reusable for UC-03, UC-06. |
+| 58 | **Bring-your-own SMS gateway works `[LIVE]` (UC-02).** `POST /config/v1.0/webhooks/ {name, type:"realtime", purpose:["external_sms"], urls:[...]}` (200, `{id}`; only types `realtime`/`notification`), `POST /config/v1.0/smsproviders {name, webhookId}` (201, starts disabled), then **`PUT /config/v1.0/smsproviders/{id}` with the FULL body** `{name, webhookId, description (non-empty, plain text), enabled:true, capabilities:["sms"], userContextAttributes:[]}` (204). While enabled, `POST /v2.0/factors/smsotp/transient/verifications` returns 201 instead of 429 and Verify POSTs `{destinationPhoneNumber, content, category:"OTP", language, otp, correlation, expiry:300}` to the webhook URL (text "Your passcode is: NNNN-NNNNNN. It expires in 5 minutes."). The code verifies at `.../verifications/{id}` (wrong 400, right 204). Delete the provider BEFORE the webhook (else refused); once gone SMS is 429 again. Voice OTP stays `CSIAP3546E`. | Answers IFC's "can we integrate our own gateways": yes. The tenant edge sometimes returns a 403 HTML page for some webhook hosts (webhook.site, example.invalid) on create; a public tunnel URL worked. |
+| 59 | **Hosted-page passkeys need the default RP `[LIVE]`.** Verify's own pages use the RP whose rpId equals the tenant host. A passkey registered on a custom `localhost` RP is accepted by the API but is invisible to the hosted login. Browsers only let a page use rpId = its own domain, so a page on `localhost` cannot register a passkey for the tenant RP: registration in a real browser goes through Verify's self-care page `https://<tenant>/usc/` (its bundle calls the same `.../attestation/options`). | No `mkcert` / `ifc-demo.local` hostname needed for the demo. The UC-02 build guide steps 1-2 are replaced. |
+| 60 | **Choice page order and AAL notes `[LIVE]`.** On the method choice page Verify lists methods in its own order (seen: authenticator app, e-mail, passkey), not passkey first; "passkey first" is exact only where the policy allows nothing else. `GET /factors/v2.0/factors/discover` lists the enabled factor types and RPs. `GET /v1.0/identitysourcetypes` works. Authorize `state` must be long enough (a 2-character state gives `invalid_state`). | Say so in the talk track; portal steers a customer with a passkey to the AAL3 application. |
 
 ### 0.2 Blockers found and fixed during this session
 
@@ -99,7 +106,7 @@ After the fixes, running `POST /setup` completed with HTTP 200: it created the `
 - Access policy: `Require 2FA for MFAGroup` (id 2001235), attached to the app
 - DPCM purposes: `communications`, `paperless-billing`, `terms`
 - Users: only the tenant admin (`Amine.Kabene@…`)
-- All probe objects (test users, DCR clients, STS clients, probe policies, CIBA apps, FIDO relying party) were **deleted**. One exception to confirm: the FIDO relying party probe for `https://ifc-demo.example.com` was created and I could not list/delete it because the list endpoint returns 405. See "Cleanup note" in UC-02.
+- All probe objects (test users, DCR clients, STS clients, probe policies, CIBA apps, FIDO relying party) were **deleted**. The FIDO relying party probe is moot: the list endpoint exists (finding 16 corrected) and only the tenant's default RP is present.
 
 ---
 
@@ -183,26 +190,28 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 
 ### UC-02: Passkeys / FIDO2 with OTP and TOTP fallback
 
-**Status:** Bob builds all server-side pieces. The passkey ceremony itself is `[HUMAN]` (needs a browser authenticator).
+**Status: BUILT, PARTIAL (2026-11-12).** Built and verified end to end against the tenant with a software authenticator, the real hosted login pages and a real e-mail OTP: `run.js` 46/46 (`demo/out/uc02.json`), `verify.js` 18 PASS / 0 FAIL / 5 HUMAN, torn down (tenant listed clean) and rebuilt from zero. Files: `demo/uc02-passkeys/{common,setup,run,serve,verify,teardown}.js` + `README.md`, `demo/lib/webauthn.js`, `stubs/passkey-portal/`, `stubs/sms-gateway/` (+ `tunnel.js`), helpers in `demo/lib/idempotent.js`.
 
-**Build steps**
-1. Hostname: WebAuthn cannot use `localhost` `[DOCS]`. Pick `ifc-demo.local`, add `127.0.0.1 ifc-demo.local` to `/etc/hosts` (needs `sudo` `[HUMAN]`), and serve the demo app over **HTTPS** with a locally trusted cert (`mkcert` `[HUMAN]` one-time install) because browsers require a secure context for WebAuthn on non-localhost names.
-2. Create the relying party: `POST /v2.0/factors/fido2/relyingparties {"origin":"https://ifc-demo.local:3443"}` → 200 `[LIVE]`. Response contains the RP id and paths (`attestationOptionsPath`, `assertionOptionsPath`, …) `[DOCS]`.
-3. Create the three assurance-level policies via v5 API (`ifc-demo-aal1-password`, `ifc-demo-aal2-otp`, `ifc-demo-aal3-passkey`) using `authnMethods` values (see `GET` of an existing policy; passkey method name must be read from a live policy or the docs; `[INFER]`: `urn:ibm:security:authentication:asf:fido2`) and bind to three apps.
-4. Add `routes/passkey.js`: adapt IBM's `verify-webauthn-passkey-sample-web`. It calls the attestation/assertion endpoints with a user-scoped token.
-5. TOTP: `POST /v2.0/factors/totp` returns a QR; email OTP via the transient verification APIs `[LIVE]` (both config endpoints respond 200 and are enabled).
-6. BYO SMS gateway: webhook purpose `external_sms` exists `[LIVE]`; create a webhook with `POST /config/v1.0/webhooks/` pointing to `stubs/sms-gateway` (logs messages) and attach it. `[INFER]` the attach step lives under SMS provider config (`manageSMSProviders` entitlement is held); **test**.
+**What was built `[LIVE]`**
+1. **Three assurance levels as policies** (`ifc-demo-uc02-policy-aal1-password` `ACTION_ALLOW`; `-aal2-otp` `ACTION_MFA_ALWAYS` fido2+totp+emailotp; `-aal3-passkey` `ACTION_MFA_ALWAYS` fido2), each bound to its own application (`-app-aal1/2/3`). The method name in v5 policies is `fido2` (finding 55).
+2. **Passkey registration and sign-in** against the tenant's default RP: options, attestation, listing, assertion on the hosted page, ID token `amr` `password,fido2,2fa`, counter moves (findings 54, 55, 59).
+3. **Attack handling:** forged signature, replayed or never-issued challenge, wrong origin: all refused.
+4. **Fallback:** AAL2 choice page, "use another method", wrong then right authenticator-app code, real e-mail OTP from a mail.tm inbox (finding 57); a customer without a passkey is refused at AAL3 (`CSIAH0640E`) and succeeds at AAL2.
+5. **Account settings:** add a second device, list, remove (API); the portal stub shows the nudge and the passkey list; identifier-first answer (`/api/methods`) without account enumeration.
+6. **BYO SMS gateway:** webhook + SMS provider via API, Verify POSTs the OTP to IFC's URL through a free tunnel (`ssh nokey@localhost.run`), the code verifies, removal restores 429 (finding 58).
 
-**Human steps**
-- `[HUMAN]` install `mkcert`, edit `/etc/hosts`, trust the cert.
-- `[HUMAN]` perform the passkey registration and sign-in in a browser (Touch ID / security key).
-- `[HUMAN]` scan the TOTP QR with an authenticator app.
+**Corrected from the earlier plan:** no `mkcert`, no `ifc-demo.local`, no custom RP, no `routes/passkey.js` in the base app and no `[INFER]` URN (finding 59, 16, 55). The "attach SMS" step is the SMS provider (finding 58).
 
-**Verification:** `GET /v2.0/factors` lists the passkey/TOTP enrollment (currently `[]` `[LIVE]`); `GET /v1.0/events` shows the factor used.
+**Not proven / left for you**
+- `[HUMAN]` A real platform passkey (Touch ID, Windows Hello, phone) and the OS prompt: register via `https://trialverify.verify.ibm.com/usc/`, then sign in at the AAL3 portal (steps in `demo/uc02-passkeys/README.md`).
+- `[INFER]` Passkey-only sign-in (no password): refused `CSIAH0026E` (finding 56). IBM must enable it.
+- `[HUMAN]` SMS to a handset and voice OTP (carrier behind IFC's gateway; IBM's own SMS and voice are blocked, finding 21).
+- `[INFER]` Required AAL per **transaction type**: Verify applies a policy per application; the per-transaction step-up is portal logic (send to the AAL3 app, or `acr_values`/`max_age`). Not built.
+- Passkey is not forced first on the AAL2 choice page (finding 60).
 
-**Teardown:** delete enrollments, policies, apps. **Cleanup note:** an FIDO RP for `https://ifc-demo.example.com` was created while probing. The list endpoint is 405, so find its id from the creation response in a re-run (`POST` returns the origin; `DELETE /v2.0/factors/fido2/relyingparties/{id}`), or leave it; it is harmless.
+**Verification:** `node demo/uc02-passkeys/verify.js`. **Teardown:** `node demo/uc02-passkeys/teardown.js` (users with their passkeys and TOTP, apps, policies, SMS provider then webhook; the default RP is never touched).
 
-**Open risks:** exact method URN for passkey in policies; SMS gateway attach; WebAuthn secure-context setup.
+**Run it:** `node demo/uc02-passkeys/setup.js`, `run.js` (60-90 s, no human), `verify.js`, `serve.js` for the browser demo, `teardown.js`.
 
 ---
 
@@ -578,9 +587,9 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 | 1 | **Email IBM now** (template in section 4). | UC-01 Track B, UC-05, UC-10, UC-11 | 10 min to send, days to get answers |
 | 2 | Install **IBM Verify** app on 1-2 phones. For UC-06: `node demo/uc06-voice/enroll-phone.js`, scan, then `node demo/uc06-voice/run.js --push`. | UC-04, UC-06, UC-14 push | 10 min |
 | 3 | Create a **public tunnel** (ngrok/cloudflared) for webhooks and back-channel logout. | UC-05, UC-08, UC-13 | 15 min |
-| 4 | `mkcert -install`, add `127.0.0.1 ifc-demo.local` to `/etc/hosts`. | UC-02 | 15 min |
+| 4 | **Closed (finding 59):** no `mkcert` / hostname needed for UC-02. | UC-02 | 0 |
 | 5 | Provide a test mailbox you can read (or several aliases). UC-01 browser pass: `node demo/uc01-registration/serve.js`, open `http://localhost:4011` (steps in UC-01 above). | UC-01, UC-03, UC-06, UC-14 | 5 min |
-| 6 | Run the passkey ceremony once in a browser. | UC-02 | 5 min |
+| 6 | Run the passkey ceremony once in a real browser: `node demo/uc02-passkeys/setup.js && node demo/uc02-passkeys/serve.js`, add a passkey at `https://trialverify.verify.ibm.com/usc/` as `ifc-demo-uc02-alice`, sign in at `http://localhost:4023` (steps in `demo/uc02-passkeys/README.md`). | UC-02 | 15 min |
 | 7 | **Closed (finding 45):** OpenFGA runs as a checksummed native binary, no Podman needed. Replaced by item 12 below. | UC-12 | 0 |
 | 8 | UC-07 browser path: sign in to the demo app as `ifc-demo-uc07-marie`, Help > "Speak with a Voicebot" (steps in UC-07 above). | UC-07 | 5 min |
 | 9 | UC-08 real browser + back-channel: `node demo/uc08-sso/serve.js`, then tunnel and `setup.js --backchannel` (steps in UC-08 above). | UC-08 | 15 min |
@@ -594,7 +603,8 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 > 1. Flow designer (API reports "not subscribed: CI-49771") and User forms.
 > 2. Branding/themes (trial returns CSIAZ3060E).
 > 3. Adaptive access (Trusteer) and activate Threat detection (config is `inactive`).
-> 4. SMS and voice OTP delivery (API returns CSIAP3545E / CSIAP3546E "not supported for this account"); confirm quota and whether a customer SMS gateway can be attached (`external_sms` webhook).
+> 4. Passwordless (passkey-only) sign-in on the Cloud Directory login page (the API route returns CSIAH0026E "not authorized to use passkey for passwordless login"; `passwordless.fido` stays false).
+> 5. SMS and voice OTP delivery (API returns CSIAP3545E / CSIAP3546E "not supported for this account"); a customer SMS gateway via `external_sms` webhook + SMS provider already works (finding 58); please confirm quota for IBM's own SMS.
 >
 > Please also confirm: (a) multiple custom IdP domains on one tenant; (b) delegated admin scoped to a subset of users (application owners are scoped per app but can read all users); (c) mTLS client authentication endpoint on SaaS; (d) the official list of password-hash prefixes for CSV import (we measured nine that work and `{SMD5}`, `{SHA1}`, `{PBKDF2}` that import without error but do not sign in), and enable Flow designer or provision the Verify Bridge external-authentication agent (`POST /config/v1.0/onpremagents` returns 401 `CSIBS0033E`) for native just-in-time migration; (e) whether one user can register more than one IBM Verify authenticator; (f) a prior financial-services migration reference; (g) the external-callout (HTTP) capability in attribute functions on a paid tenant.
 
@@ -603,7 +613,7 @@ Legend per use case: **Status** (can Bob build it fully?), **Build steps** (auto
 1. **Foundation** (`demo/lib`, `00-probe.js`, `teardown-all.js`): **done**.
 2. **UC-01 (Track A), UC-09, UC-13, UC-14, UC-15 built and verified.** UC-15 next human steps: browser consent grant (5 min).
 3. **UC-07 (built, browser login pending), UC-06 (built, push pending a phone)**, then **UC-03** (UC-01 Track A is built and verified).
-4. **UC-08 (built, browser + tunnel pending)**, then **UC-02, UC-04** (need browser/phone).
+4. **UC-08 (built, browser + tunnel pending)**, **UC-02 (built, partial: real-device passkey pending)**, then **UC-04** (needs phone).
 5. **UC-10 (partial, built; branding and domains need IBM)**, **UC-11 (partial, built; native JIT needs IBM)**, then **UC-12, UC-05** (blocked or partial).
 
 ## 6. Changes made to the repo during this session
