@@ -28,7 +28,7 @@
 |---|---|---|---|---|
 | 01 | Self-service registration, progressive profiling | **READY NOW** for the scripted path (52/52 `[LIVE]`, `verify.js` PASS: real Verify e-mail OTP, duplicates, Client 360 link, progressive stages) / NEEDS HUMAN for a real browser pass with your own mailbox | Registration portal in a browser (`localhost:4011`), your mailbox, admin console (users, group) | Flow designer is not enabled and there is no self-registration config API, so the wizard is IFC-style code around Verify's APIs, not a no-code Verify flow; custom attributes do not reach the ID token (the Client 360 id travels as `employee_id`); no passkey/SMS choice at signup |
 | 02 | Passkeys, OTP, TOTP fallback | **READY NOW** for the scripted path (46/46 `[LIVE]`, `verify.js` PASS: software passkey on the real tenant, AAL1/2/3 policies, real e-mail OTP, authenticator-app fallback, own SMS gateway) / NEEDS HUMAN SETUP for a real platform passkey (Touch ID) | Terminal, 3 AAL portals on :4021-4023, Verify self-care page, admin console | Passkey-only (no password) sign-in is refused by this tenant (IBM must enable); IBM SMS blocked, own gateway works; real device prompt not rehearsed |
-| 03 | Risk-aware recovery, agent-assisted | PARTIAL NOW (app forgot-password) / NEEDS BUILD (agent console) | Demo app, agent page, admin console events | No AI risk score without Adaptive access |
+| 03 | Risk-aware recovery, agent-assisted | **READY NOW** for the scripted path (61 checks `[LIVE]`, `verify.js`: hosted Forgot password, agent reset + sessions ended, risk routing from real Verify signals, `ipAddress` step-up, audit) / NEEDS HUMAN for one browser pass | Recovery console `localhost:4030`, the customers' mailboxes (`mailbox.js`), a browser for the hosted pages | No AI risk score (rule-based over Verify signals); `geoLocation` rule and a foreign country not provable; self-service reset sends no "changed" e-mail in our runs; e-mail OTP quota on the trial |
 | 04 | Trusted devices, push, revoke | NEEDS IBM / HUMAN SETUP | IBM Verify app on phone, admin console | Two registrations for one user unconfirmed |
 | 05 | Adaptive risk and fraud | PARTIAL NOW (policy view) / NEEDS BUILD + IBM | Admin console, risk stub | Threat detection inactive; IFC signals go in as `external_risk` webhook, not as Trusteer model features |
 | 06 | Voicebot | **READY NOW** for e-mail OTP + authenticator-code step-up (scripted 32/32 `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) and passkey | Terminal "caller", admin console, mailbox | Voice is simulated; SMS/voice OTP blocked on this tenant (e-mail OTP used); push and passkey step-up not yet proven |
@@ -173,28 +173,42 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-03: Risk-aware account recovery, agent-assisted
 
-**Readiness:** PARTIAL NOW (customer-side forgot-password). Agent console is NEEDS BUILD.
+**Readiness:** READY NOW for the scripted path; one browser pass is `[HUMAN]` (10 minutes). Build details: `DEMO-BUILD-GUIDE.md` UC-03, `demo/uc03-recovery/README.md`.
 
-**Prerequisites**
-- A test customer with a readable email.
-- Agent persona signed in on a second browser profile (the `/agent` page once built).
-- Optional: VPN or second network to make the sign-in look foreign.
+**Prerequisites** (5 minutes before the demo; run `setup.js` again if the last one was more than 24 h ago, because Marc's new authenticator must still be "recent")
+- `node demo/uc03-recovery/setup.js` then `node demo/uc03-recovery/serve.js`, open `http://localhost:4030` (it prints the two user names, they carry a random suffix).
+- A second terminal for the customers' mailboxes: `node demo/uc03-recovery/mailbox.js sophie --open` and `... marc --open`.
+- Optional: have `demo/out/uc03.json` ready and `node demo/uc03-recovery/verify.js` output.
+- Do not rehearse the e-mail steps in a loop: the hosted reset allows about 2 requests per user (then `CSIAH0327I`), and the trial's e-mail OTP has a quota (`CSIAP3523E`).
 
 **Click path**
-1. Customer window → `/app/forgot-password` → enter email → receive OTP → set a new password. Show it works.
-2. Risky scenario: from a different network/VPN country, try to sign in. Policy demands an OTP (geoLocation rule).
-3. Agent window → `/agent` → search the customer → buttons: **Send reset**, **End all sessions**, event table for that user.
-4. Click **End all sessions**. In the customer window, refresh a profile page: the session is gone and login is required.
+1. **Low risk, self-service (Sophie).** Console section 1: type Sophie's user name, Start recovery. The customer sees only "use Forgot password". In the agent panel: LOW, route self-service, the lock shown as a fact. Open the link shown by the portal (hosted login page), click **Forgot password**, enter the user name. Read the e-mail with `mailbox.js sophie --open`, open the link (valid 30 minutes, single use), set a new password. Sign in works; the old session is gone.
+2. **Higher risk, assisted (Marc).** Type Marc's user name. The agent panel shows **HIGH**, reason RECENT_FACTOR_CHANGE ("an authenticator was added 2 minutes ago"), recent sign-in table with device, IP, country. The customer only sees "call us with this reference".
+3. **Verify the caller.** Click "Send a code to the address on file". Read the code with `mailbox.js marc --open`, type it, Confirm. Without this step the reset button stays disabled. The agent cannot change the address and a just-added authenticator is not accepted as proof.
+4. **Recover.** Click **Reset password and end all sessions**. Show the output (reset 204, sessions 204), then `mailbox.js marc --open`: Verify e-mailed a temporary password that the agent never saw. Marc must choose a new one at sign-in.
+5. **Audit.** Click Refresh audit (events appear 15 to 90 s later): sign-in attempts with device/IP/country, "agent password reset" by `ifc-demo-uc03-recovery-console`, and the case log.
+6. **Risk-aware policy (optional, 1 minute).** Show policy `ifc-demo-uc03-risk-signin` in the admin console (Security > Access policies): TOTP step-up when the IP is NOT in the usual range. The scripted run showed both outcomes.
 
 **Talk track**
-- "Self-service handles the normal case. Anything unusual escalates to an agent with identity-safe tools, not password peeking."
-- "The agent never sees a password. They trigger Verify's reset and see the audit trail."
+- "Self-service handles the normal case. A recent factor change, a device we have not seen succeed, or a new country send the caller to an agent."
+- "The agent proves the caller with a one-time code sent to the address on file, not to whatever the caller says, and never sees a password."
+- "On recovery the sessions end and the customer is e-mailed. Every step is in Verify's event log and in IFC's case log."
+- "The risk here is rules over Verify's signals, not an AI score. An AI score needs Adaptive access."
 
-**Show in admin console:** Events: password-reset, session-revoke, and sign-in events for the user.
+**Show in admin console:** Reports > Events (agent reset, sign-ins with IP and device), the console API client's 6 entitlements, the Cloud Directory source setting that turns on Forgot password.
 
-**If it breaks:** If the geo rule does not trigger, show the policy and a recorded event; do not claim live detection.
+**If it breaks**
+- Reset link says "expired" (`CSIAH0328E`): links are single use; request a new one (not more than twice).
+- "Reset password is disabled" (`CSIAH0325E`): re-run `setup.js`; the setting is switched off by teardown.
+- Code e-mail not sent (429 `CSIAP3523E`): the trial's e-mail OTP quota is used up; explain it, and show the scripted evidence (`verify.js`).
+- Audit table empty: wait; Verify events lag 15 to 90 s.
 
-**Honest limitation:** No AI risk score unless IBM enables Adaptive access. Geo and IP rules are available.
+**Honest limitation**
+- No AI risk score (needs Adaptive access). The risk rules are IFC-side logic over Verify signals.
+- A **foreign country** cannot be demonstrated from here (Verify ignores X-Forwarded-For); "new geography" is shown on synthetic data and in the rule, real events do carry the country. The `geoLocation` policy condition is accepted but was never evaluated; the demo uses `ipAddress`.
+- Hosted Forgot password is not risk-aware: IFC's portal must route high-risk cases away from it.
+- The self-service reset page says it sends a notification e-mail; none arrived in our runs. The agent route does notify.
+- IFC fraud analytics feed (real-time events to a SIEM) was not exercised.
 
 ---
 

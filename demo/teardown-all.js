@@ -79,10 +79,13 @@ async function main() {
       console.log('  delete purpose    ', x.name, (await api('DELETE', `/dpcm-mgmt/config/v1.0/privacy/purposes/${encodeURIComponent(x.id)}`, { quiet: true })).status);
     }
     for (const x of inv.attributes) console.log('  delete attribute  ', x.name, (await api('DELETE', `/v1.0/attributes/${x.id}`, { quiet: true })).status);
+    // UC-03 switched the hosted "Forgot password" on for the whole tenant (not an ifc-demo-* object): switch it back off.
+    if (await idem.hostedPasswordResetEnabled()) console.log('  restore tenant setting: hosted Forgot password OFF (UC-03)', JSON.stringify(await idem.setHostedPasswordReset(false)));
     inv = await inventory();
   }
   console.log(`\nObjects named "${PREFIX}*" on the tenant now: ${count(inv)}`);
   for (const [k, list] of Object.entries(inv)) console.log(`  ${k.padEnd(13)} ${list.length}${list.length ? '  ' + list.map((x) => x.name).join(', ') : ''}`);
+  console.log(`  tenant setting: hosted Forgot password ${(await idem.hostedPasswordResetEnabled()) ? 'ON (UC-03 setup left it on)' : 'OFF (default)'}`);
   process.exit(!listOnly && count(inv) > 0 ? 1 : 0);
 }
 

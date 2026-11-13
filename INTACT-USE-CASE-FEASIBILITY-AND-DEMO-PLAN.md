@@ -260,18 +260,20 @@ Each section: **Verdict, what Verify provides, what we build (API/CLI only), the
 **Verdict: YES, with caveats**
 
 **Provided natively**
-- Self-service password reset APIs: `resetpassword`, `resetpasswordvalidator`, `resetpasswordcomplete` (v1.0 usc endpoints) and username recovery `[API]`.
+- Self-service recovery: the hosted "Forgot password" of the Cloud Directory login (30-minute single-use e-mail link, password policy, clears a lock, ends old tokens) `[LIVE]`. It is OFF by default and is switched on through the identity source (`passwordResetEnabled`). **Correction:** the `resetpassword*` v1.0 usc endpoints named earlier do not exist on this tenant (they return the console login page).
 - Admin/agent reset: `PATCH /v2.0/Users/{id}/passwordResetter` (optional notification to the user) `[API]`.
 - End sessions on reset: `DELETE /v1.0/auth/sessions/{userId}` (entitlements `manageLoginSessions` or `revokeAllSessions`) `[API]`.
 - Audit record: `GET /v1.0/events` (management, SSO, authentication events) `[API]`.
 - Risk-aware step-up: access policy with adaptive risk levels `[DOCS]`.
 
-**Gaps:** "show risk signals" requires Adaptive access to be enabled. Without it, we can only show *contextual* signals (IP, geo, device) from events, not an AI risk score.
+**Gaps:** "show risk signals" requires Adaptive access to be enabled. Without it, we can only show *contextual* signals (IP, country, device from events; lock, last login and factor age from SCIM and the factor list), scored by IFC-side rules, not an AI risk score. The `geoLocation` policy condition is accepted but was never evaluated `[LIVE]`; `ipAddress` is. The hosted Forgot-password link is not risk-aware, so IFC's portal must route high-risk cases to the agent.
+
+**Status: BUILT (partial), see `DEMO-BUILD-GUIDE.md` UC-03. 61 live checks, `demo/uc03-recovery/`.**
 
 **Build**
 1. `setup.js`: policy for the recovery journey (OTP to verified channel; require stronger factor if risk is high).
-2. Customer path: script drives the reset APIs end to end: request, validator, OTP, complete.
-3. Agent console: a small page in the demo app (`views/agent/*`, route `/agent`) using the agent's privileged token. Actions: look up user, trigger `passwordResetter`, call session revoke, show the last 10 events for that user.
+2. Customer path: script drives the hosted Forgot-password pages end to end: request, e-mailed link, new password.
+3. Agent console: a standalone stub (`stubs/recovery-console/`, port 4030) on its own 6-entitlement API client, not the admin token. Actions: look up user, trigger `passwordResetter`, call session revoke, show the last 10 events for that user.
 4. On reset: script calls `DELETE sessions` and optionally revokes grants; sends notification (reset notification option, or webhook to a stub).
 5. Evidence: `demo/out/uc03.json` lists event ids.
 

@@ -467,7 +467,31 @@ async function deleteSmsGatewaysByPrefix(prefix) {
   return out;
 }
 
+// Hosted "Forgot password" of the Cloud Directory login (UC-03) [LIVE 2026-11-12]. It is OFF by default (CSIAH0325E "Reset password is disabled").
+// The switch is a property of the Cloud Directory identity source (sourceTypeId 5): PUT the whole document with {key:'passwordResetEnabled', value:'true'}.
+// It is TENANT-WIDE, not an ifc-demo-* object: whoever enables it must restore it (teardown does). Returns {changed, enabled}.
+const PWRESET_KEY = 'passwordResetEnabled';
+async function cloudDirectorySource() {
+  const l = await api('GET', '/v1.0/identitysources');
+  const src = ((l.data && l.data.identitySources) || []).find((s) => s.sourceTypeId === 5);
+  if (l.status !== 200 || !src) throw new Error(`Cloud Directory identity source not found: HTTP ${l.status} cid=${l.cid}`);
+  return src;
+}
+const isPwResetOn = (src) => (src.properties || []).some((p) => p.key === PWRESET_KEY && p.value === 'true');
+async function setHostedPasswordReset(enabled) {
+  const src = await cloudDirectorySource();
+  if (isPwResetOn(src) === enabled) return { changed: false, enabled };
+  const doc = JSON.parse(JSON.stringify(src));
+  doc.properties = (doc.properties || []).filter((p) => p.key !== PWRESET_KEY);
+  if (enabled) doc.properties.push({ key: PWRESET_KEY, value: 'true', sensitive: false });
+  const r = await api('PUT', `/v1.0/identitysources/${src.id}`, { body: doc });
+  if (r.status !== 204) throw new Error(`set ${PWRESET_KEY}=${enabled}: HTTP ${r.status} cid=${r.cid}`);
+  return { changed: true, enabled };
+}
+async function hostedPasswordResetEnabled() { return isPwResetOn(await cloudDirectorySource()); }
+
 module.exports = {
+  setHostedPasswordReset, hostedPasswordResetEnabled,
   findUser, ensureUser, deleteUser, deleteUsersByPrefix, ensureGroup, deleteGroupsByPrefix, ensureGroupMember,
   findApiClient, ensureApiClient, deleteApiClientsByPrefix,
   ensureTotp, findStsClient, ensureStsClient, deleteStsClientsByPrefix, listApplications, deleteApplicationsByPrefix, ensureDcrClient,

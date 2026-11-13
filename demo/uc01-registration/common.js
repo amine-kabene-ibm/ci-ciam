@@ -39,16 +39,34 @@ async function mtRetry(...args) {
     await sleep(4000 + i * 2000);
   }
 }
-async function createInbox() {
+// UC-03 reuses this inbox for its own customers: `prefix` names the address, and `password` is returned so a person can open the same
+// mailbox at https://mail.tm during the demo (the token alone cannot be used in the web UI).
+async function createInbox(prefix = 'ifc-demo-uc01-') {
   const d = await mtRetry('get', '/domains');
   const domain = d.data['hydra:member'][0].domain;
-  const address = `ifc-demo-uc01-${randomPart(4)}@${domain}`;
+  const address = `${prefix}${randomPart(4)}@${domain}`;
   const password = newPassword();
   const a = await mtRetry('post', '/accounts', { body: { address, password } });
   if (a.status !== 201) throw new Error(`mail.tm account: HTTP ${a.status}`);
   const t = await mtRetry('post', '/token', { body: { address, password } });
   if (t.status !== 200) throw new Error(`mail.tm token: HTTP ${t.status}`);
-  return { address, token: t.data.token };
+  return { address, password, token: t.data.token };
+}
+// Re-login of a stored inbox (the token of an old inbox may have expired). Returns a fresh {address, password, token} or null.
+async function inboxLogin(inbox) {
+  const t = await mtRetry('post', '/token', { body: { address: inbox.address, password: inbox.password } });
+  return t.status === 200 ? { ...inbox, token: t.data.token } : null;
+}
+// All messages of an inbox, newest first, with full text: [{id, subject, text, at (ms)}]. Returns null if the token is refused.
+async function readMessages(inbox) {
+  const l = await mtRetry('get', '/messages', { token: inbox.token });
+  if (l.status !== 200) return null;
+  const out = [];
+  for (const m of (l.data && l.data['hydra:member']) || []) {
+    const full = await mtRetry('get', `/messages/${m.id}`, { token: inbox.token });
+    out.push({ id: m.id, subject: String((full.data && full.data.subject) || '').trim(), text: String((full.data && full.data.text) || ''), at: Date.parse(full.data && full.data.createdAt) });
+  }
+  return out;
 }
 // The Verify e-mail reads "... 7920-511189 ...": the first 4 digits are the correlation shown on screen, the person types the rest.
 async function waitForOtp(inbox, { correlation, timeoutMs = 170000 } = {}) {
@@ -66,5 +84,5 @@ async function waitForOtp(inbox, { correlation, timeoutMs = 170000 } = {}) {
 }
 
 module.exports = {
-  UC, PREFIX, GROUP, PORTAL_APP, REG_CLIENT, REG_ENTITLEMENTS, ATTRIBUTES, PORTS, state, newPassword, createInbox, waitForOtp,
+  UC, PREFIX, GROUP, PORTAL_APP, REG_CLIENT, REG_ENTITLEMENTS, ATTRIBUTES, PORTS, state, newPassword, createInbox, waitForOtp, inboxLogin, readMessages,
 };
