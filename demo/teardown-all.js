@@ -2,8 +2,9 @@
 // Deletes every tenant object whose name starts with "ifc-demo-". Safe to re-run.
 //   node demo/teardown-all.js            delete everything and list what is left
 //   node demo/teardown-all.js --list     only list (dry run)
-// Covers: users, groups, API clients, applications (includes DCR clients), access policies, STS clients, branding themes, SMS providers, webhooks, privacy purposes, custom attributes.
-// FIDO2 registrations go with their user.
+// Covers: users, groups, API clients, applications (includes DCR clients), access policies, STS clients, branding themes, SMS providers, webhooks, privacy purposes, custom attributes,
+// authenticator clients (UC-04: the "own branded app" registration profile).
+// FIDO2 registrations and IBM Verify device registrations (UC-04) go with their user.
 // Not covered on purpose: objects the base app creates in /setup (TrustMeInsurance, MFAGroup, ...).
 const { api, PREFIX } = require('./lib/verify');
 const idem = require('./lib/idempotent');
@@ -11,7 +12,7 @@ const idem = require('./lib/idempotent');
 const listOnly = process.argv.includes('--list');
 
 async function inventory() {
-  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], smsProviders: [], webhooks: [], purposes: [], attributes: [] };
+  const inv = { users: [], groups: [], apiClients: [], applications: [], policies: [], stsClients: [], themes: [], smsProviders: [], webhooks: [], purposes: [], attributes: [], authClients: [] };
 
   const u = await api('GET', '/v2.0/Users', { query: { filter: `userName sw "${PREFIX}"`, attributes: 'id,userName', count: 200 } });
   inv.users = ((u.data && u.data.Resources) || []).map((x) => ({ id: x.id, name: x.userName }));
@@ -54,6 +55,9 @@ async function inventory() {
   inv.purposes = ((pur.data && pur.data.purposes) || []).filter((x) => x.id.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.id }));
 
   inv.attributes = (await idem.listTenantAttributes()).filter((x) => x.name.startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
+
+  const ac = await api('GET', '/v1.0/authenticators/clients', { quiet: true });
+  inv.authClients = ((ac.data && ac.data.clients) || []).filter((x) => (x.name || '').startsWith(PREFIX)).map((x) => ({ id: x.id, name: x.name }));
   return inv;
 }
 
@@ -79,6 +83,7 @@ async function main() {
       console.log('  delete purpose    ', x.name, (await api('DELETE', `/dpcm-mgmt/config/v1.0/privacy/purposes/${encodeURIComponent(x.id)}`, { quiet: true })).status);
     }
     for (const x of inv.attributes) console.log('  delete attribute  ', x.name, (await api('DELETE', `/v1.0/attributes/${x.id}`, { quiet: true })).status);
+    for (const x of inv.authClients) console.log('  delete authenticator client', x.name, (await api('DELETE', `/v1.0/authenticators/clients/${x.id}`, { quiet: true })).status);
     // UC-03 switched the hosted "Forgot password" on for the whole tenant (not an ifc-demo-* object): switch it back off.
     if (await idem.hostedPasswordResetEnabled()) console.log('  restore tenant setting: hosted Forgot password OFF (UC-03)', JSON.stringify(await idem.setHostedPasswordReset(false)));
     inv = await inventory();

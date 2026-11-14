@@ -29,7 +29,7 @@
 | 01 | Self-service registration, progressive profiling | **READY NOW** for the scripted path (52/52 `[LIVE]`, `verify.js` PASS: real Verify e-mail OTP, duplicates, Client 360 link, progressive stages) / NEEDS HUMAN for a real browser pass with your own mailbox | Registration portal in a browser (`localhost:4011`), your mailbox, admin console (users, group) | Flow designer is not enabled and there is no self-registration config API, so the wizard is IFC-style code around Verify's APIs, not a no-code Verify flow; custom attributes do not reach the ID token (the Client 360 id travels as `employee_id`); no passkey/SMS choice at signup |
 | 02 | Passkeys, OTP, TOTP fallback | **READY NOW** for the scripted path (46/46 `[LIVE]`, `verify.js` PASS: software passkey on the real tenant, AAL1/2/3 policies, real e-mail OTP, authenticator-app fallback, own SMS gateway) / NEEDS HUMAN SETUP for a real platform passkey (Touch ID) | Terminal, 3 AAL portals on :4021-4023, Verify self-care page, admin console | Passkey-only (no password) sign-in is refused by this tenant (IBM must enable); IBM SMS blocked, own gateway works; real device prompt not rehearsed |
 | 03 | Risk-aware recovery, agent-assisted | **READY NOW** for the scripted path (61 checks `[LIVE]`, `verify.js`: hosted Forgot password, agent reset + sessions ended, risk routing from real Verify signals, `ipAddress` step-up, audit) / NEEDS HUMAN for one browser pass | Recovery console `localhost:4030`, the customers' mailboxes (`mailbox.js`), a browser for the hosted pages | No AI risk score (rule-based over Verify signals); `geoLocation` rule and a foreign country not provable; self-service reset sends no "changed" e-mail in our runs; e-mail OTP quota on the trial |
-| 04 | Trusted devices, push, revoke | NEEDS IBM / HUMAN SETUP | IBM Verify app on phone, admin console | Two registrations for one user unconfirmed |
+| 04 | Trusted devices, push, revoke | **READY NOW** for the scripted path (57/57 `[LIVE]`, `verify.js` PASS: 2+ devices per user, self-service register/revoke with the customer's own token, push approve/deny/fraud, hosted sign-in with device choice, audit; simulated IBM Verify app) / NEEDS HUMAN SETUP for a real phone push | "My trusted devices" page `localhost:4041`, terminal (`run.js`), IBM Verify app on 1-2 phones, admin console (users, events) | The scripted run uses a software IBM Verify app: no real APNs/FCM delivery, Face ID or app screen; Firebase / proprietary-SDK / Salesforce Marketing Cloud push for IFC's own app is not settable through the API (ask IBM); number matching has no effect |
 | 05 | Adaptive risk and fraud | PARTIAL NOW (policy view) / NEEDS BUILD + IBM | Admin console, risk stub | Threat detection inactive; IFC signals go in as `external_risk` webhook, not as Trusteer model features |
 | 06 | Voicebot | **READY NOW** for e-mail OTP + authenticator-code step-up (scripted 32/32 `[LIVE]`) / NEEDS HUMAN SETUP for push (phone) and passkey | Terminal "caller", admin console, mailbox | Voice is simulated; SMS/voice OTP blocked on this tenant (e-mail OTP used); push and passkey step-up not yet proven |
 | 07 | App-to-voice handoff | **READY NOW** for the scripted app (terminal, 48/48 `[LIVE]`) / NEEDS HUMAN SETUP for the browser login to the real demo app, push and passkey | Terminal "app + caller", demo app Help page, admin console | Voice and the CCaaS are simulated; browser path and push not yet executed; IFC's own flow text still says "enter the OTP" (confirm) |
@@ -56,7 +56,7 @@
 | 4 | MFA policy attached | Admin console → Security → Access policies → `Require 2FA for MFAGroup` | Present, attached to the app |
 | 5 | Token for API client works | `demo/00-probe.js` when built (the build guide section 1.3) | PASS table |
 | 6 | Browser profiles | One clean profile for the customer persona, one for the agent/admin persona | Two separate windows, so cookies do not mix |
-| 7 | Phone | IBM Verify app installed and one account registered (UC-04, 06, 14) | `[HUMAN]` |
+| 7 | Phone | IBM Verify app installed and one account registered (UC-04 `enroll-phone.js`, 06, 14) | `[HUMAN]` |
 | 8 | Tunnel | `cloudflared` or `ngrok` running (UC-05, 08, 13) | `[HUMAN]` |
 | 9 | Mailbox | Test inbox open in a tab | `[HUMAN]` |
 
@@ -214,26 +214,34 @@ Each section: **Readiness, Prerequisites, Click path, Talk track, Show in admin 
 
 ### UC-04: Trusted devices (two devices), push, self-service revoke
 
-**Readiness:** NEEDS IBM / HUMAN SETUP.
+**Readiness:** **READY NOW** for the scripted path (57/57 `[LIVE]`, `node demo/uc04-devices/verify.js` PASS) with a simulated IBM Verify app. A real phone push NEEDS HUMAN SETUP (10 min).
 
 **Prerequisites**
-- IBM Verify app on phone(s). Two registrations for the same user (two phones, or two accounts on one phone, or a second device).
-- `demo/uc04-devices/` scripts when built.
+- `node demo/uc04-devices/setup.js`, then `node demo/uc04-devices/serve.js` (portal on `http://localhost:4041`, customer `ifc-demo-uc04-marie`).
+- Optional `[HUMAN]`: IBM Verify on 1-2 phones; `node demo/uc04-devices/enroll-phone.js` once per phone (scan the QR).
+- Admin console open on Users > `ifc-demo-uc04-marie` and on Reports/Events.
 
-**Click path**
-1. Terminal/Admin → generate registration QR for user (A). Scan with the IBM Verify app. Do the same for device B.
-2. Admin console → user → authenticators: two entries.
-3. Sign in on the demo app. Phone shows a push: **Approve**.
-4. Repeat and **Deny** to show failure.
-5. Revoke device A: Admin console (or app page, once built) → remove. Next push goes only to device B.
+**Click path (portal, no phone needed)**
+1. Open `localhost:4041`. "My trusted devices" is empty. Press **Simulate a phone scan** (name "Marie iPhone 15", IOS), then again with "Marie Pixel 8", Android. Two devices, both ACTIVE: IFC's "more than one trusted device".
+2. With a real phone: press **Show QR code**, scan with IBM Verify. It appears in the list after Refresh.
+3. Pick "simulated phone approves" and press **Push** on a device: the result shows VERIFY_SUCCESS and the delay. "Simulated phone denies" shows USER_DENIED. With a real phone choose "I will answer" and tap Approve on the phone.
+4. Press **Revoke** on one device: it disappears at once; Push on it is refused (404), the other still works. This is the self-service revoke (the customer's own token, no admin).
+5. Terminal: `node demo/uc04-devices/run.js` (about 65 s) for the full 57 checks: sign-in with device choice (approve -> code, deny -> refused), wrong key, replay, other customer 403, disable/enable, audit.
+6. Admin console: Users > Marie > devices/authenticators, then Events: `mfa_device created / deleted` and "IBM Verify Push" results.
 
-**Talk track:** "Push is a second factor with context (location, IP, message). Revocation is immediate."
+**Talk track:** "The customer registers as many phones as she wants; each is a trusted device. A push carries the message, the IP and the location. She can revoke a device herself and it is dead immediately; a stolen phone can also be disabled from the back office. Everything is in the audit log."
 
-**Show in admin console:** Authenticators list; events for approve/deny.
+**Show in admin console:** user's authenticators list (2 entries), events for registration, approve, deny and revoke.
 
-**If it breaks:** If the second registration is rejected, say so: "one registered IBM Verify authenticator per user in this configuration; IFC's two-device need is addressed with passkeys plus push." (The RFP accepts a stated limitation.)
+**If it breaks:**
+- Push not seen on a real phone: check notifications are allowed for IBM Verify; the request is still visible in the app. Fall back to the portal's simulated phone and say so.
+- Events missing: the events API lags 25 to 40 s; wait and refresh.
+- No fallback on "one device per user" is needed: 13 devices for one user were registered `[LIVE]`.
 
-**Honest limitation:** Two authenticators per user is not confirmed. No registered phone exists yet `[LIVE]`.
+**Honest limitation**
+- `[LIVE]` with a **simulated** app only: the real APNs/FCM notification, Face ID / Touch ID and the app screen showing the location are `[HUMAN]` and not yet seen.
+- IFC's own app push (proprietary SDK, Firebase, Salesforce Marketing Cloud): the authenticator client (registration profile) exists, but Firebase/APNs credentials are not settable through the API. Needs the IBM Verify MFA SDK in IFC's app and IBM `[DOCS]`.
+- Number matching (`correlationEnabled`) is accepted but has no effect.
 
 ---
 

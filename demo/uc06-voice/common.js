@@ -7,8 +7,9 @@ const UC = 'uc06';
 const CCAAS_CLIENT = `${PREFIX}uc06-ccaas`;
 // Least privilege for the CCaaS/voicebot. Measured [LIVE] with 403 probes:
 //   readUsers (SCIM lookup), authnAnyUser (create/attempt OTP), readEnrollMFAMethodAnyUser (list TOTP + push enrolments).
-// readAuthenticatorsAnyUser + mfaPush are included for the push step-up [INFER]: the push call cannot be exercised
-// without a registered phone, so these two are not proven necessary. Compare: the admin client holds 165 entitlements.
+// readAuthenticatorsAnyUser + mfaPush are included for the push step-up. UC-04 measured [LIVE 2026-11-13] with a software device:
+// creating a push needs authnAnyUser (already listed), and mfaPush alone does NOT enable it, so mfaPush is harmless but not needed.
+// Compare: the admin client holds 165 entitlements.
 const CCAAS_ENTITLEMENTS = ['readUsers', 'authnAnyUser', 'readEnrollMFAMethodAnyUser', 'readAuthenticatorsAnyUser', 'mfaPush'];
 const VERIFY_PROFILE_CLIENT_ID = '5280f51a-9699-4d96-9dd9-bcc0fdfdf9dd'; // "Verify Profile" authenticator client [LIVE]
 const state = stateFile(UC);
